@@ -1,0 +1,154 @@
+{
+  "name": "human-in-the-loop-mcp",
+  "displayName": "Human in the Loop MCP",
+  "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
+  "version": "1.0.0",
+  "publisher": "DercasDrol",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DercasDrol/human-in-the-loop-mcp"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "mcp",
+    "model context protocol",
+    "copilot",
+    "human-in-the-loop",
+    "ai",
+    "agent"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "human-in-the-loop",
+          "title": "Human in the Loop",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "human-in-the-loop": [
+        {
+          "type": "webview",
+          "id": "humanInTheLoop.mainView",
+          "name": "Agent Messages"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "humanInTheLoop.showInstructions",
+        "title": "Show Connection Instructions",
+        "category": "Human in the Loop"
+      },
+      {
+        "command": "humanInTheLoop.restartServer",
+        "title": "Restart MCP Server",
+        "category": "Human in the Loop"
+      },
+      {
+        "command": "humanInTheLoop.configureServer",
+        "title": "Configure MCP Server",
+        "category": "Human in the Loop"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "humanInTheLoop.showInstructions",
+          "group": "navigation",
+          "when": "view == humanInTheLoop.mainView"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Human in the Loop MCP",
+      "properties": {
+        "humanInTheLoop.timeout": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 600,
+          "description": "Timeout in seconds for waiting user response (10-600 seconds)"
+        },
+        "humanInTheLoop.port": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Port for MCP server (0 = auto-assign). Note: Port from .vscode/mcp.json takes priority."
+        },
+        "humanInTheLoop.autoSubmitOnTimeout": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically submit the current input when timeout is reached"
+        },
+        "humanInTheLoop.soundEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play sound notification when agent sends a message"
+        },
+        "humanInTheLoop.soundVolume": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Volume of notification sound (0.0 - 1.0)"
+        },
+        "humanInTheLoop.soundType": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "chime",
+            "bell",
+            "ping",
+            "alert",
+            "melody",
+            "notification"
+          ],
+          "enumDescriptions": [
+            "Default notification sound (short)",
+            "Soft chime sound (short)",
+            "Bell sound (medium)",
+            "Short ping sound",
+            "Alert pattern (long, attention-grabbing)",
+            "Musical melody (long, pleasant)",
+            "Two-tone notification (medium)"
+          ],
+          "description": "Type of notification sound"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.100.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0"
+  }
+}

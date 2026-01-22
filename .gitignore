@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+
+# IDE
+.vscode-test/
+*.vsix
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+.nyc_output/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Environment
+.env
+
+# Editor / IDE
+.vscode/
+.idea/
+.history/
+
+# Caches and framework build dirs
+.cache/
+.parcel-cache/
+.next/
+.turbo/
+
+# Yarn / npm
+yarn-error.log
