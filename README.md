@@ -223,7 +223,7 @@ This extension:
 ## Requirements
 
 - VS Code 1.100.0 or higher
-- Node.js 18+ (included with VS Code)
+- Node.js 20+ (for development; VS Code includes its own runtime)
 
 ## Contributing
 
