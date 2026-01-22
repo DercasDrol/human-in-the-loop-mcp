@@ -11,6 +11,11 @@ on:
                 required: true
                 default: "true"
                 type: boolean
+            create_release:
+                description: "Create GitHub Release"
+                required: true
+                default: "true"
+                type: boolean
 
 jobs:
     release:
@@ -22,6 +27,8 @@ jobs:
         steps:
             - name: Checkout
               uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
             - name: Setup Node.js
               uses: actions/setup-node@v4
@@ -37,16 +44,38 @@ jobs:
 
             - name: Get version from package.json
               id: package_version
-              run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+              run: |
+                  VERSION=$(node -p "require('./package.json').version")
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  echo "tag=v$VERSION" >> $GITHUB_OUTPUT
 
             - name: Package extension
               run: npx @vscode/vsce package --allow-missing-repository
 
-            - name: Create GitHub Release
+            - name: Rename VSIX for release
+              run: |
+                  VSIX_FILE=$(ls *.vsix)
+                  echo "vsix_file=$VSIX_FILE" >> $GITHUB_ENV
+
+            - name: Create GitHub Release (on tag push)
               uses: softprops/action-gh-release@v2
               if: startsWith(github.ref, 'refs/tags/')
               with:
                   files: "*.vsix"
+                  name: "Human in the Loop MCP ${{ github.ref_name }}"
+                  generate_release_notes: true
+                  draft: false
+                  prerelease: false
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Create GitHub Release (manual trigger)
+              uses: softprops/action-gh-release@v2
+              if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
+              with:
+                  files: "*.vsix"
+                  tag_name: ${{ steps.package_version.outputs.tag }}
+                  name: "Human in the Loop MCP ${{ steps.package_version.outputs.tag }}"
                   generate_release_notes: true
                   draft: false
                   prerelease: false
