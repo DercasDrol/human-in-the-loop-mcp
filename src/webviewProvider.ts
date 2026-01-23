@@ -49,6 +49,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       },
     );
 
+    // Send initial server info immediately after view is created
+    // This ensures the panel shows correct status even if 'ready' message is delayed
+    setTimeout(() => {
+      this.sendServerInfo();
+      this.sendSettings();
+    }, 100);
+
     // Send server info when webview is ready
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
