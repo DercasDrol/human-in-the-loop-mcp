@@ -454,12 +454,38 @@ export class MCPServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): void {
+    const MAX_BODY_SIZE = 1024 * 1024; // 1MB limit to prevent DoS
     let body = "";
+    let aborted = false;
+
     req.on("data", (chunk) => {
+      if (aborted) return;
+
       body += chunk.toString();
+
+      // Check body size limit
+      if (body.length > MAX_BODY_SIZE) {
+        aborted = true;
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: {
+              code: -32600,
+              message: "Request body too large",
+              data: `Maximum allowed size is ${MAX_BODY_SIZE} bytes`,
+            },
+          }),
+        );
+        req.destroy();
+        return;
+      }
     });
 
     req.on("end", async () => {
+      if (aborted) return;
+
       try {
         const jsonRpcRequest = JSON.parse(body);
         const response = await this.processJsonRpc(jsonRpcRequest);
@@ -543,6 +569,12 @@ export class MCPServer {
    * Handle initialize request
    */
   private handleInitialize(params: any): any {
+    // Get version from extension context
+    const extension = vscode.extensions.getExtension(
+      "DercasDrol.human-in-the-loop-mcp",
+    );
+    const version = extension?.packageJSON?.version || "1.0.0";
+
     return {
       protocolVersion: "2024-11-05",
       capabilities: {
@@ -550,7 +582,7 @@ export class MCPServer {
       },
       serverInfo: {
         name: "human-in-the-loop-mcp",
-        version: "1.0.0",
+        version: version,
       },
     };
   }

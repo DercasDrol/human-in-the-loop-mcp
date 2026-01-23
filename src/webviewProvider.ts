@@ -324,11 +324,39 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             display: flex;
         }
 
+        .title-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+
         .title {
             font-size: 16px;
             font-weight: bold;
             color: var(--vscode-foreground);
             margin: 0;
+            flex: 1;
+        }
+
+        .icon-btn {
+            background: transparent;
+            border: none;
+            padding: 4px 6px;
+            cursor: pointer;
+            font-size: 14px;
+            border-radius: 4px;
+            opacity: 0.7;
+            transition: opacity 0.2s, background-color 0.2s;
+        }
+
+        .icon-btn:hover {
+            opacity: 1;
+            background-color: var(--vscode-button-secondaryBackground);
+        }
+
+        .icon-btn.copied {
+            color: var(--vscode-charts-green);
         }
 
         .message {
@@ -610,7 +638,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             <span class="server-info" id="serverInfo">Server: Not started</span>
             <div class="countdown" id="countdownContainer" style="display: none;">
                 <span>⏱️</span>
-                <span class="countdown-timer" id="countdownTimer">120s</span>
+                <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>
             </div>
         </div>
         
@@ -619,39 +647,42 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         </div>
 
         <div class="request-container" id="requestContainer">
-            <h2 class="title" id="requestTitle"></h2>
+            <div class="title-row">
+                <h2 class="title" id="requestTitle"></h2>
+                <button id="copyMessageBtn" class="icon-btn" title="Copy message" aria-label="Copy message to clipboard">📋</button>
+            </div>
             <div class="message" id="requestMessage"></div>
             
             <div class="input-container" id="textInputContainer" style="display: none;">
-                <textarea id="textInput" placeholder="Enter your response..."></textarea>
-                <button id="submitTextBtn" class="primary">Submit</button>
+                <textarea id="textInput" placeholder="Enter your response..." aria-label="Your response"></textarea>
+                <button id="submitTextBtn" class="primary" aria-label="Submit response">Submit</button>
             </div>
 
             <div class="confirm-buttons" id="confirmContainer" style="display: none;">
-                <button id="yesBtn" class="primary">Yes</button>
-                <button id="noBtn" class="secondary">No</button>
+                <button id="yesBtn" class="primary" aria-label="Confirm yes">Yes</button>
+                <button id="noBtn" class="secondary" aria-label="Confirm no">No</button>
                 <div class="custom-input-toggle">
-                    <button id="confirmCustomToggle" class="toggle-btn" title="Send custom response">✏️ Custom response</button>
+                    <button id="confirmCustomToggle" class="toggle-btn" title="Send custom response" aria-label="Toggle custom response input">✏️ Custom response</button>
                 </div>
                 <div class="custom-input-row" id="confirmCustomInput" style="display: none;">
-                    <input type="text" id="confirmCustomText" placeholder="Type custom response...">
-                    <button id="confirmCustomSend" class="primary">Send</button>
+                    <input type="text" id="confirmCustomText" placeholder="Type custom response..." aria-label="Custom response text">
+                    <button id="confirmCustomSend" class="primary" aria-label="Send custom response">Send</button>
                 </div>
             </div>
 
-            <div class="button-container" id="buttonsContainer" style="display: none;">
+            <div class="button-container" id="buttonsContainer" style="display: none;" role="group" aria-label="Response options">
             </div>
             
             <div class="custom-input-toggle" id="buttonsCustomToggle" style="display: none;">
-                <button id="buttonsToggleBtn" class="toggle-btn" title="Send custom response">✏️ Custom response</button>
+                <button id="buttonsToggleBtn" class="toggle-btn" title="Send custom response" aria-label="Toggle custom response input">✏️ Custom response</button>
             </div>
             <div class="custom-input-row" id="buttonsCustomInput" style="display: none;">
-                <input type="text" id="buttonsCustomText" placeholder="Type custom response...">
-                <button id="buttonsCustomSend" class="primary">Send</button>
+                <input type="text" id="buttonsCustomText" placeholder="Type custom response..." aria-label="Custom response text">
+                <button id="buttonsCustomSend" class="primary" aria-label="Send custom response">Send</button>
             </div>
         </div>
 
-        <div class="empty-state" id="emptyState">
+        <div class="empty-state" id="emptyState" role="status" aria-live="polite">
             <div class="icon">💬</div>
             <h3>Waiting for Agent</h3>
             <p>When an agent sends a message,<br>it will appear here.</p>
@@ -676,6 +707,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const requestContainer = document.getElementById('requestContainer');
             const requestTitle = document.getElementById('requestTitle');
             const requestMessage = document.getElementById('requestMessage');
+            const copyMessageBtn = document.getElementById('copyMessageBtn');
             const textInputContainer = document.getElementById('textInputContainer');
             const textInput = document.getElementById('textInput');
             const submitTextBtn = document.getElementById('submitTextBtn');
@@ -698,6 +730,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             let currentRequestId = null;
             let totalTimeout = 120;
             let currentRequestType = null;
+            let currentMessageText = ''; // Store original message text for copying
             let settings = {
                 autoSubmitOnTimeout: false,
                 soundEnabled: true,
@@ -894,6 +927,18 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
+            // Sanitize URL to prevent javascript: and data: attacks
+            function sanitizeUrl(url) {
+                if (!url) return '#';
+                const trimmed = url.trim().toLowerCase();
+                if (trimmed.startsWith('javascript:') || 
+                    trimmed.startsWith('data:') || 
+                    trimmed.startsWith('vbscript:')) {
+                    return '#';
+                }
+                return url;
+            }
+
             // Comprehensive markdown parser
             function parseMarkdown(text) {
                 if (!text) return '';
@@ -937,11 +982,15 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 // Strikethrough (~~text~~)
                 html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
                 
-                // Links [text](url)
-                html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+                // Links [text](url) - with URL sanitization
+                html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
+                    return '<a href="' + sanitizeUrl(url) + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
+                });
                 
-                // Images ![alt](url)
-                html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width: 100%; height: auto;">');
+                // Images ![alt](url) - with URL sanitization
+                html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, alt, url) {
+                    return '<img src="' + sanitizeUrl(url) + '" alt="' + alt + '" style="max-width: 100%; height: auto;">';
+                });
                 
                 // Unordered lists (- item or * item)
                 html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
@@ -986,6 +1035,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 currentRequestId = request.id;
                 currentRequestType = request.type;
                 totalTimeout = countdown;
+                currentMessageText = request.message; // Store for copy function
 
                 requestTitle.textContent = request.title;
                 requestMessage.innerHTML = parseMarkdown(request.message);
@@ -1035,9 +1085,19 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 updateCountdown(countdown);
             }
 
+            // Format seconds as mm:ss or just seconds
+            function formatTime(seconds) {
+                if (seconds >= 60) {
+                    const mins = Math.floor(seconds / 60);
+                    const secs = seconds % 60;
+                    return mins + ':' + (secs < 10 ? '0' : '') + secs;
+                }
+                return seconds + 's';
+            }
+
             // Update countdown
             function updateCountdown(seconds) {
-                countdownTimer.textContent = seconds + 's';
+                countdownTimer.textContent = formatTime(seconds);
                 
                 // Check for auto-submit when countdown reaches 1
                 if (seconds <= 1 && settings.autoSubmitOnTimeout) {
@@ -1087,6 +1147,22 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             }
 
             // Event listeners
+            
+            // Copy message button
+            copyMessageBtn.addEventListener('click', async () => {
+                try {
+                    await navigator.clipboard.writeText(currentMessageText);
+                    copyMessageBtn.textContent = '✅';
+                    copyMessageBtn.classList.add('copied');
+                    setTimeout(() => {
+                        copyMessageBtn.textContent = '📋';
+                        copyMessageBtn.classList.remove('copied');
+                    }, 1500);
+                } catch (err) {
+                    console.error('Failed to copy:', err);
+                }
+            });
+            
             submitTextBtn.addEventListener('click', () => {
                 const value = textInput.value.trim();
                 if (value) {

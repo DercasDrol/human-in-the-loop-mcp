@@ -304,7 +304,6 @@ Add to your \`.vscode/mcp.json\`:
 ## Settings
 
 - Timeout: Configure in Settings > Human in the Loop > Timeout
-- Port: Configure in Settings > Human in the Loop > Port
 `;
 
   // Show as markdown preview
@@ -469,7 +468,6 @@ Add to your \`.vscode/mcp.json\`:
     <h2>⚡ Settings</h2>
     <ul>
         <li><a class="settings-link" href="command:workbench.action.openSettings?%22humanInTheLoop.timeout%22">⏱️ Timeout</a> - Time to wait for user response (default: 120s)</li>
-        <li><a class="settings-link" href="command:workbench.action.openSettings?%22humanInTheLoop.port%22">🔌 Port</a> - Server port (0 = auto-assign)</li>
         <li><a class="settings-link" href="command:workbench.action.openSettings?%22humanInTheLoop.autoSubmitOnTimeout%22">📤 Auto Submit</a> - Auto-send current input when timer expires</li>
         <li><a class="settings-link" href="command:workbench.action.openSettings?%22humanInTheLoop.soundEnabled%22">🔔 Sound</a> - Play sound on new messages</li>
         <li><a class="settings-link" href="command:workbench.action.openSettings?%22humanInTheLoop.soundVolume%22">🔊 Volume</a> - Notification volume (0.0 - 1.0)</li>

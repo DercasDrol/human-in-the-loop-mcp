@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -86,13 +86,6 @@
           "minimum": 10,
           "maximum": 600,
           "description": "Timeout in seconds for waiting user response (10-600 seconds)"
-        },
-        "humanInTheLoop.port": {
-          "type": "number",
-          "default": 0,
-          "minimum": 0,
-          "maximum": 65535,
-          "description": "Port for MCP server (0 = auto-assign). Note: Port from .vscode/mcp.json takes priority."
         },
         "humanInTheLoop.autoSubmitOnTimeout": {
           "type": "boolean",

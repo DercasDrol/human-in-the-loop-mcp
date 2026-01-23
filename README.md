@@ -73,14 +73,6 @@ Add the MCP server to your project's `.vscode/mcp.json`:
 3. A countdown timer shows the remaining time to respond
 4. Enter your response or click the appropriate button
 
-### 3. Port Configuration Priority
-
-The extension determines the port using this priority:
-
-1. **`.vscode/mcp.json`** in your workspace (recommended)
-2. **VS Code extension settings** (`humanInTheLoop.port`)
-3. **Auto-assign** a random available port (if port is 0 or not set)
-
 ## Available MCP Tools
 
 Your AI agent can use these tools to interact with users:
@@ -147,7 +139,6 @@ Configure the extension in VS Code Settings (`Ctrl+,`):
 | Setting                              | Type    | Default   | Description                                  |
 | ------------------------------------ | ------- | --------- | -------------------------------------------- |
 | `humanInTheLoop.timeout`             | number  | 120       | Response timeout in seconds (10-600)         |
-| `humanInTheLoop.port`                | number  | 0         | Server port (0 = auto-assign)                |
 | `humanInTheLoop.autoSubmitOnTimeout` | boolean | false     | Auto-submit current input when timer expires |
 | `humanInTheLoop.soundEnabled`        | boolean | true      | Play sound on new requests                   |
 | `humanInTheLoop.soundVolume`         | number  | 0.5       | Sound volume (0.0 - 1.0)                     |
