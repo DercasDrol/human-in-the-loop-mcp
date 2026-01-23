@@ -17,6 +17,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private currentRequest: ToolRequest | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
+  private webviewReady = false;
+  private pendingMessages: ExtensionToWebviewMessage[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -35,6 +37,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this._view = webviewView;
 
+    // Reset webview ready state for new view
+    this.webviewReady = false;
+    this.pendingMessages = [];
+
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
@@ -49,17 +55,19 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       },
     );
 
-    // Send initial server info immediately after view is created
-    // This ensures the panel shows correct status even if 'ready' message is delayed
-    setTimeout(() => {
-      this.sendServerInfo();
-      this.sendSettings();
-    }, 100);
-
-    // Send server info when webview is ready
+    // Send server info when webview becomes visible again
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
-        this.sendServerInfo();
+        // Always send fresh data when view becomes visible
+        this.postMessageToWebview({
+          type: "serverInfo",
+          serverUrl:
+            this.mcpServer.getConfigStatus() === "running"
+              ? this.mcpServer.getUrl()
+              : "",
+          serverPort: this.mcpServer.getPort(),
+          configStatus: this.mcpServer.getConfigStatus(),
+        });
         this.sendSettings();
         if (this.currentRequest) {
           this.sendRequest(this.currentRequest);
@@ -69,11 +77,33 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Post message to webview with buffering for readiness
+   * If webview is not ready, messages are queued and sent when ready
+   */
+  private postMessageToWebview(message: ExtensionToWebviewMessage): void {
+    if (!this._view) return;
+
+    if (this.webviewReady) {
+      this._view.webview.postMessage(message);
+    } else {
+      // Buffer messages until webview is ready
+      this.pendingMessages.push(message);
+    }
+  }
+
+  /**
    * Handle messages from the webview
    */
   private handleWebviewMessage(message: WebviewToExtensionMessage): void {
     switch (message.type) {
       case "ready":
+        this.webviewReady = true;
+        // Flush any pending messages
+        for (const msg of this.pendingMessages) {
+          this._view?.webview.postMessage(msg);
+        }
+        this.pendingMessages = [];
+        // Send current state
         this.sendServerInfo();
         this.sendSettings();
         if (this.currentRequest) {
@@ -650,7 +680,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 <body>
     <div class="container">
         <div class="header">
-            <span class="server-info" id="serverInfo">Server: Not started</span>
+            <span class="server-info" id="serverInfo">Server: Connecting...</span>
             <div class="countdown" id="countdownContainer" style="display: none;">
                 <span>⏱️</span>
                 <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>

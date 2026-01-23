@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-01-22
+
+### Fixed
+
+- **Fixed critical WebView synchronization bug** - Panel now reliably shows correct server status
+  - Root cause: Race condition between postMessage and webview JavaScript initialization
+  - Solution: Added message buffering system - messages are queued until webview confirms readiness
+  - Added `webviewReady` flag and `pendingMessages` buffer for reliable message delivery
+  - Removed unreliable setTimeout(100ms) approach that caused timing issues
+  - Initial state now shows "Connecting..." instead of "Not started" for better UX
+
 ## [1.0.4] - 2026-01-22
 
 ### Fixed
