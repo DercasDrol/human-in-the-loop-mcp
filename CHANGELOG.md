@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-01-22
+
+### Fixed
+
+- **Fixed critical bug: WebView panel not syncing with server status** - panel now correctly displays server status and receives agent requests
+- Added `updateServerInfo()` method called after server starts/stops/restarts/config changes
+- Improved serverInfo status display logic with proper handling of "running", "configured" and "not-configured" states
+- Hidden "Connection Instructions" block when server is running (was confusing users into thinking they need to configure)
+
+### Improved
+
+- Empty state now shows "✅ Ready" with port number when server is running
+- Added "Starting Server..." state with yellow indicator
+
 ## [1.0.2] - 2026-01-22
 
 ### Security

@@ -227,6 +227,14 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Public method to update server info in webview
+   * Call this after server starts/stops
+   */
+  public updateServerInfo(): void {
+    this.sendServerInfo();
+  }
+
+  /**
    * Generate HTML for the webview
    */
   private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -1266,13 +1274,23 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                                 '<code>Human in the Loop: Configure MCP Server</code><br><br>' +
                                 'Or add to <code>.vscode/mcp.json</code>:<br>' +
                                 '<code>{"servers": {"human-in-the-loop": {"url": "http://127.0.0.1:PORT/mcp"}}}</code>';
-                        } else if (message.serverPort > 0) {
+                            document.getElementById('instructions').style.display = 'block';
+                        } else if (message.configStatus === 'running' && message.serverPort > 0) {
                             serverInfo.textContent = 'Server: localhost:' + message.serverPort;
                             serverInfo.style.color = 'var(--vscode-foreground)';
                             mcpConfig.textContent = '"url": "' + message.serverUrl + '"';
-                            emptyState.querySelector('h3').textContent = 'Waiting for Agent';
-                            emptyState.querySelector('p').innerHTML = 'When an agent sends a message,<br>it will appear here.';
+                            emptyState.querySelector('h3').textContent = '✅ Ready';
+                            emptyState.querySelector('p').innerHTML = 'Server is running on port ' + message.serverPort + '.<br>Waiting for agent requests...';
                             emptyState.querySelector('.icon').textContent = '💬';
+                            // Hide connection instructions when server is running
+                            document.getElementById('instructions').style.display = 'none';
+                        } else if (message.configStatus === 'configured') {
+                            serverInfo.textContent = 'Server: Starting...';
+                            serverInfo.style.color = 'var(--vscode-charts-yellow)';
+                            emptyState.querySelector('h3').textContent = 'Starting Server';
+                            emptyState.querySelector('p').innerHTML = 'Please wait...';
+                            emptyState.querySelector('.icon').textContent = '⏳';
+                            document.getElementById('instructions').style.display = 'none';
                         }
                         break;
 

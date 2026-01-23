@@ -95,6 +95,10 @@ function setupFileWatcher(context: vscode.ExtensionContext): void {
     console.log("mcp.json deleted, stopping server");
     if (mcpServer) {
       await mcpServer.stop();
+      // Update WebView to show server stopped
+      if (viewProvider) {
+        viewProvider.updateServerInfo();
+      }
       vscode.window
         .showWarningMessage(
           "MCP configuration deleted. Server stopped.",
@@ -137,10 +141,19 @@ async function tryStartServer(): Promise<void> {
       vscode.window.showInformationMessage(
         `Human in the Loop MCP server started on port ${port}`,
       );
+      // Update WebView with server info
+      if (viewProvider) {
+        viewProvider.updateServerInfo();
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     vscode.window.showErrorMessage(`Failed to start MCP server: ${message}`);
+  }
+
+  // Update WebView status even on failure
+  if (viewProvider) {
+    viewProvider.updateServerInfo();
   }
 }
 
@@ -194,12 +207,21 @@ async function configureServer(): Promise<void> {
       vscode.window.showInformationMessage(
         `Human in the Loop MCP server started on port ${port}`,
       );
+      // Update WebView with server info
+      if (viewProvider) {
+        viewProvider.updateServerInfo();
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       vscode.window.showErrorMessage(`Failed to start MCP server: ${message}`);
     }
   } else {
     vscode.window.showErrorMessage("Failed to create MCP configuration");
+  }
+
+  // Update WebView status
+  if (viewProvider) {
+    viewProvider.updateServerInfo();
   }
 }
 
@@ -221,12 +243,21 @@ export async function deactivate(): Promise<void> {
 async function restartServer(): Promise<void> {
   if (mcpServer) {
     await mcpServer.stop();
+    // Update WebView immediately to show stopping status
+    if (viewProvider) {
+      viewProvider.updateServerInfo();
+    }
+
     try {
       const port = await mcpServer.start();
       if (port !== null) {
         vscode.window.showInformationMessage(
           `MCP server restarted on port ${port}`,
         );
+        // Update WebView with new server info
+        if (viewProvider) {
+          viewProvider.updateServerInfo();
+        }
       } else {
         const selection = await vscode.window.showWarningMessage(
           "No MCP configuration found",
@@ -241,6 +272,11 @@ async function restartServer(): Promise<void> {
       vscode.window.showErrorMessage(
         `Failed to restart MCP server: ${message}`,
       );
+    }
+
+    // Update WebView status after restart attempt
+    if (viewProvider) {
+      viewProvider.updateServerInfo();
     }
   }
 }
