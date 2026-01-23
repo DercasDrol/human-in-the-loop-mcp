@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-01-23
+
+### Fixed
+
+- **CRITICAL: Fixed JavaScript SyntaxError crashing WebView** - Root cause of all sync issues found!
+  - Problem: Regex patterns in `parseMarkdown()` lost escape characters in template literal
+  - In template literal (backticks): `\*` → `*`, `\n` → newline, `\[` → `[`, `\/` → `/`
+  - Browser received invalid regex like `/^(---|***|___)$/gm` causing SyntaxError
+  - JavaScript crashed before event handlers registered → "ready" never sent → sync failure
+  
+- **Fixed all regex patterns in parseMarkdown()** - Doubled escape characters for template literal context:
+  - Horizontal rule: `\*\*\*` → `[*]{3}` (character class doesn't need escaping)
+  - Bold: `\*\*` → `[*][*]` 
+  - Italic: `\*` → `[*]`
+  - Code blocks: `[\\s\\S]` → `[\\\\s\\\\S]`
+  - Links/Images: `\[`, `\]` → `\\[`, `\\]`
+  - Newlines: `\n` → `\\n`
+  - Slashes: `\/` → `\\/`
+  - Ordered lists: `\d`, `\.` → `\\d`, `\\.`
+
+## [1.0.7] - 2026-01-23
+
+### Fixed
+
+- **Complete rollback to v1.0.0 WebView logic** - Removed all experimental buffering code
+  - Removed `webviewReady` flag and `pendingMessages` buffer that caused issues
+  - Removed `postMessageToWebview()` method
+  - Restored simple, working logic from v1.0.0
+  - Kept valuable improvements: copy button, mm:ss timer, aria-labels, updateServerInfo()
+
+### Added
+
+- Test infrastructure with @vscode/test-electron for automated testing
+- Extension activation tests, command registration tests, MCP server tests
+
+## [1.0.6] - 2026-01-23
+
+### Fixed
+
+- **Fixed WebView panel not showing server status** - Root cause identified via git diff with v1.0.0
+  - Problem: Over-complicated JavaScript conditions `configStatus === 'running' && serverPort > 0`
+  - Solution: Simplified to original v1.0.0 logic `serverPort > 0` which correctly shows running server
+  - Added fallback else branch for unknown states (shows "Starting...")
+  - Kept message buffering system from 1.0.5 as additional reliability measure
+
 ## [1.0.5] - 2026-01-22
 
 ### Fixed

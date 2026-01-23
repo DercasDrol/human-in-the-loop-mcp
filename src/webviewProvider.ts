@@ -17,8 +17,6 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private currentRequest: ToolRequest | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
-  private webviewReady = false;
-  private pendingMessages: ExtensionToWebviewMessage[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -37,10 +35,6 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this._view = webviewView;
 
-    // Reset webview ready state for new view
-    this.webviewReady = false;
-    this.pendingMessages = [];
-
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.extensionUri],
@@ -55,19 +49,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       },
     );
 
-    // Send server info when webview becomes visible again
+    // Send server info when webview becomes visible
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
-        // Always send fresh data when view becomes visible
-        this.postMessageToWebview({
-          type: "serverInfo",
-          serverUrl:
-            this.mcpServer.getConfigStatus() === "running"
-              ? this.mcpServer.getUrl()
-              : "",
-          serverPort: this.mcpServer.getPort(),
-          configStatus: this.mcpServer.getConfigStatus(),
-        });
+        this.sendServerInfo();
         this.sendSettings();
         if (this.currentRequest) {
           this.sendRequest(this.currentRequest);
@@ -77,33 +62,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Post message to webview with buffering for readiness
-   * If webview is not ready, messages are queued and sent when ready
-   */
-  private postMessageToWebview(message: ExtensionToWebviewMessage): void {
-    if (!this._view) return;
-
-    if (this.webviewReady) {
-      this._view.webview.postMessage(message);
-    } else {
-      // Buffer messages until webview is ready
-      this.pendingMessages.push(message);
-    }
-  }
-
-  /**
    * Handle messages from the webview
    */
   private handleWebviewMessage(message: WebviewToExtensionMessage): void {
     switch (message.type) {
       case "ready":
-        this.webviewReady = true;
-        // Flush any pending messages
-        for (const msg of this.pendingMessages) {
-          this._view?.webview.postMessage(msg);
-        }
-        this.pendingMessages = [];
-        // Send current state
         this.sendServerInfo();
         this.sendSettings();
         if (this.currentRequest) {
@@ -680,7 +643,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 <body>
     <div class="container">
         <div class="header">
-            <span class="server-info" id="serverInfo">Server: Connecting...</span>
+            <span class="server-info" id="serverInfo">Server: Not started</span>
             <div class="countdown" id="countdownContainer" style="display: none;">
                 <span>⏱️</span>
                 <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>
@@ -1014,45 +977,45 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
                 
                 // Horizontal rule (---, ***, ___)
-                html = html.replace(/^(---|\*\*\*|___)$/gm, '<hr>');
+                html = html.replace(/^(---|[*]{3}|___)$/gm, '<hr>');
                 
                 // Bold (**text** or __text__)
-                html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                html = html.replace(/[*][*](.+?)[*][*]/g, '<strong>$1</strong>');
                 html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
                 
                 // Italic (*text* or _text_)
-                html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+                html = html.replace(/[*](.+?)[*]/g, '<em>$1</em>');
                 html = html.replace(/_(.+?)_/g, '<em>$1</em>');
                 
                 // Strikethrough (~~text~~)
                 html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
                 
                 // Links [text](url) - with URL sanitization
-                html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, text, url) {
+                html = html.replace(/\\[([^\\x5D]+)\\]\\(([^)]+)\\)/g, function(match, text, url) {
                     return '<a href="' + sanitizeUrl(url) + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
                 });
                 
                 // Images ![alt](url) - with URL sanitization
-                html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(match, alt, url) {
+                html = html.replace(/!\\[([^\\x5D]*)\\]\\(([^)]+)\\)/g, function(match, alt, url) {
                     return '<img src="' + sanitizeUrl(url) + '" alt="' + alt + '" style="max-width: 100%; height: auto;">';
                 });
                 
                 // Unordered lists (- item or * item)
-                html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
-                html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+                html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+                html = html.replace(/(<li>.*<\\/li>)/s, '<ul>$1</ul>');
                 
                 // Ordered lists (1. item)
-                html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+                html = html.replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>');
                 
                 // Clean up consecutive list items
-                html = html.replace(/<\/li>\n<li>/g, '</li><li>');
+                html = html.replace(/<\\/li>\\n<li>/g, '</li><li>');
                 
                 // Wrap orphaned list items in ul
-                html = html.replace(/(<li>(?:(?!<ul>|<ol>|<\/ul>|<\/ol>).)*<\/li>)+/g, '<ul>$&</ul>');
+                html = html.replace(/(<li>(?:(?!<ul>|<ol>|<\\/ul>|<\\/ol>).)*<\\/li>)+/g, '<ul>$&</ul>');
                 
                 // Line breaks
-                html = html.replace(/\n\n/g, '</p><p>');
-                html = html.replace(/\n/g, '<br>');
+                html = html.replace(/\\n\\n/g, '</p><p>');
+                html = html.replace(/\\n/g, '<br>');
                 
                 // Wrap in paragraph if not already wrapped
                 if (!html.startsWith('<') || html.startsWith('<em>') || html.startsWith('<strong>')) {
@@ -1060,17 +1023,17 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 }
                 
                 // Clean up empty paragraphs
-                html = html.replace(/<p><\/p>/g, '');
+                html = html.replace(/<p><\\/p>/g, '');
                 html = html.replace(/<p>(<h[1-6]>)/g, '$1');
-                html = html.replace(/(<\/h[1-6]>)<\/p>/g, '$1');
+                html = html.replace(/(<\\/h[1-6]>)<\\/p>/g, '$1');
                 html = html.replace(/<p>(<pre>)/g, '$1');
-                html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+                html = html.replace(/(<\\/pre>)<\\/p>/g, '$1');
                 html = html.replace(/<p>(<ul>)/g, '$1');
-                html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+                html = html.replace(/(<\\/ul>)<\\/p>/g, '$1');
                 html = html.replace(/<p>(<blockquote>)/g, '$1');
-                html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+                html = html.replace(/(<\\/blockquote>)<\\/p>/g, '$1');
                 html = html.replace(/<p>(<hr>)/g, '$1');
-                html = html.replace(/(<hr>)<\/p>/g, '$1');
+                html = html.replace(/(<hr>)<\\/p>/g, '$1');
                 
                 return html;
             }
@@ -1312,16 +1275,15 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                                 'Or add to <code>.vscode/mcp.json</code>:<br>' +
                                 '<code>{"servers": {"human-in-the-loop": {"url": "http://127.0.0.1:PORT/mcp"}}}</code>';
                             document.getElementById('instructions').style.display = 'block';
-                        } else if (message.configStatus === 'running' && message.serverPort > 0) {
+                        } else if (message.serverPort > 0) {
                             serverInfo.textContent = 'Server: localhost:' + message.serverPort;
                             serverInfo.style.color = 'var(--vscode-foreground)';
                             mcpConfig.textContent = '"url": "' + message.serverUrl + '"';
                             emptyState.querySelector('h3').textContent = '✅ Ready';
                             emptyState.querySelector('p').innerHTML = 'Server is running on port ' + message.serverPort + '.<br>Waiting for agent requests...';
                             emptyState.querySelector('.icon').textContent = '💬';
-                            // Hide connection instructions when server is running
                             document.getElementById('instructions').style.display = 'none';
-                        } else if (message.configStatus === 'configured') {
+                        } else {
                             serverInfo.textContent = 'Server: Starting...';
                             serverInfo.style.color = 'var(--vscode-charts-yellow)';
                             emptyState.querySelector('h3').textContent = 'Starting Server';

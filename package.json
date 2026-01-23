@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.5",
+  "version": "1.0.8",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -134,14 +134,25 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "pretest": "npm run compile"
   },
   "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.100.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/test-electron": "^2.3.9",
     "eslint": "^8.56.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.4.0",
     "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "isomorphic-dompurify": "^2.35.0",
+    "marked": "^17.0.1"
   }
 }
