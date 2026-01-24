@@ -82,7 +82,8 @@ export interface ExtensionToWebviewMessage {
     | "serverInfo"
     | "settings"
     | "playSound"
-    | "pauseState";
+    | "pauseState"
+    | "requestCancelled";
   request?: ToolRequest;
   messageHtml?: string; // Pre-rendered markdown HTML
   countdown?: number;
@@ -90,6 +91,9 @@ export interface ExtensionToWebviewMessage {
   serverPort?: number;
   configStatus?: "not-configured" | "configured" | "running";
   isPaused?: boolean; // Timer pause state
+  // For requestCancelled
+  requestId?: string;
+  reason?: string;
   settings?: {
     autoSubmitOnTimeout?: boolean;
     soundEnabled?: boolean;
@@ -102,7 +106,7 @@ export interface ExtensionToWebviewMessage {
  * Message from webview to extension
  */
 export interface WebviewToExtensionMessage {
-  type: "response" | "ready" | "togglePause";
+  type: "response" | "ready" | "togglePause" | "showInstructions" | "showHistory";
   requestId?: string;
   value?: string | boolean;
 }
@@ -119,4 +123,26 @@ export interface PendingRequest {
   isPaused: boolean;
   startTime: number; // When the current timeout started
   totalTimeout: number; // Original total timeout in ms
+}
+
+/**
+ * History entry status
+ */
+export type HistoryStatus = "pending" | "answered" | "timeout" | "cancelled";
+
+/**
+ * History entry for request/response tracking
+ */
+export interface HistoryEntry {
+  id: string;
+  requestId: string;
+  toolName: ToolType;
+  title: string;
+  message: string;
+  options?: Array<{ label: string; value: string }>;
+  requestTime: number; // timestamp ms
+  responseTime?: number; // timestamp ms
+  status: HistoryStatus;
+  response?: string | boolean;
+  error?: string;
 }

@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.14] - 2026-01-24
+
+### Added
+
+- **Request History** 📜
+  - New "Show Request History" command and button
+  - Tracks all agent requests with timestamps
+  - Records response time, duration, and status
+  - Supports status filtering: pending, answered, timeout, cancelled
+  - Persisted in workspace-specific globalState (survives restarts)
+  - Maximum 100 entries per workspace (FIFO)
+  - Real-time updates when history panel is open
+  - Clear history button
+
+- **Header action buttons** 🎛️
+  - Added "📋 Instructions" button in panel header
+  - Added "📜 History" button in panel header
+  - Buttons styled consistently with VS Code theme
+
+### Changed
+
+- Panel header now includes quick-access buttons
+- Improved button styling with proper hover states
+
+### Technical
+
+- New `HistoryManager` class for history persistence
+- New `HistoryViewProvider` class for history panel
+- Added `HistoryEntry` and `HistoryStatus` types
+- MCPServer now records all request events to history
+- WebView can trigger commands via messages
+
+## [1.0.13] - 2026-01-24
+
+### Added
+
+- **Sticky countdown timer** 📌
+  - Timer and progress bar now stay fixed at top when scrolling
+  - Always visible even with long messages
+  - Shadow effect for visual separation from content
+  - Clean separation from header (server info stays in place)
+
+### Changed
+
+- Restructured HTML: countdown and progress bar moved to dedicated sticky container
+- Timer container uses `position: sticky` with proper z-index and background
+
+## [1.0.12] - 2026-01-24
+
+### Added
+
+- **Agent-UI synchronization** 🔄
+  - UI now detects when agent disconnects (stops waiting for response)
+  - Shows "Request Cancelled" banner with reason when agent disconnects
+  - Disables input controls to prevent submitting to disconnected agent
+  - Auto-clears cancelled request after 5 seconds
+  - Handles both agent disconnect and server timeout scenarios
+
+### Changed
+
+- HTTP request handling now tracks connection state
+- Added `onRequestCancelled` callback to MCPServer for UI notifications
+- Added `requestCancelled` message type for Extension-WebView communication
+
 ## [1.0.11] - 2026-01-24
 
 ### Added

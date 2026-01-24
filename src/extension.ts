@@ -8,9 +8,13 @@
 import * as vscode from "vscode";
 import { MCPServer } from "./mcpServer";
 import { HumanInTheLoopViewProvider } from "./webviewProvider";
+import { HistoryManager } from "./historyManager";
+import { HistoryViewProvider } from "./historyViewProvider";
 
 let mcpServer: MCPServer | null = null;
 let viewProvider: HumanInTheLoopViewProvider | null = null;
+let historyManager: HistoryManager | null = null;
+let historyViewProvider: HistoryViewProvider | null = null;
 let fileWatcher: vscode.FileSystemWatcher | null = null;
 
 /**
@@ -21,8 +25,20 @@ export async function activate(
 ): Promise<void> {
   console.log("Human in the Loop MCP extension is now active");
 
-  // Create MCP server
+  // Create history manager
+  historyManager = new HistoryManager(context);
+  context.subscriptions.push({ dispose: () => historyManager?.dispose() });
+
+  // Create MCP server and connect history manager
   mcpServer = new MCPServer(context);
+  mcpServer.setHistoryManager(historyManager);
+
+  // Create history view provider
+  historyViewProvider = new HistoryViewProvider(
+    context.extensionUri,
+    historyManager,
+  );
+  context.subscriptions.push({ dispose: () => historyViewProvider?.dispose() });
 
   // Create and register webview provider
   viewProvider = new HumanInTheLoopViewProvider(
@@ -46,6 +62,12 @@ export async function activate(
   context.subscriptions.push(
     vscode.commands.registerCommand("humanInTheLoop.showInstructions", () => {
       showConnectionInstructions();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("humanInTheLoop.showHistory", () => {
+      historyViewProvider?.show();
     }),
   );
 

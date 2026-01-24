@@ -16,6 +16,7 @@ import {
   ButtonsToolRequest,
   PendingRequest,
 } from "./types";
+import { HistoryManager } from "./historyManager";
 
 // Generate UUID using crypto
 function generateId(): string {
@@ -48,6 +49,10 @@ export class MCPServer {
   private port: number = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   private onRequestCallback: ((request: ToolRequest) => void) | null = null;
+  private onRequestCancelledCallback:
+    | ((requestId: string, reason: string) => void)
+    | null = null;
+  private historyManager: HistoryManager | null = null;
   private statusBarItem: vscode.StatusBarItem;
   private configStatus: "not-configured" | "configured" | "running" =
     "not-configured";
@@ -59,6 +64,13 @@ export class MCPServer {
     );
     this.statusBarItem.command = "humanInTheLoop.showInstructions";
     context.subscriptions.push(this.statusBarItem);
+  }
+
+  /**
+   * Set history manager for recording requests/responses
+   */
+  public setHistoryManager(historyManager: HistoryManager): void {
+    this.historyManager = historyManager;
   }
 
   /**
@@ -241,6 +253,15 @@ export class MCPServer {
   }
 
   /**
+   * Set callback for cancelled requests (agent disconnected, timeout, etc.)
+   */
+  public onRequestCancelled(
+    callback: (requestId: string, reason: string) => void,
+  ): void {
+    this.onRequestCancelledCallback = callback;
+  }
+
+  /**
    * Start the MCP server
    * Returns port number if started, or null if no config found
    */
@@ -388,6 +409,12 @@ export class MCPServer {
         clearTimeout(pending.timeoutId);
       }
       this.pendingRequests.delete(requestId);
+
+      // Record response in history
+      if (this.historyManager) {
+        this.historyManager.updateEntry(requestId, "answered", value);
+      }
+
       pending.resolve({
         id: requestId,
         success: true,
@@ -492,7 +519,7 @@ export class MCPServer {
 
       try {
         const jsonRpcRequest = JSON.parse(body);
-        const response = await this.processJsonRpc(jsonRpcRequest);
+        const response = await this.processJsonRpc(jsonRpcRequest, req);
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(response));
@@ -518,7 +545,10 @@ export class MCPServer {
   /**
    * Process JSON-RPC request
    */
-  private async processJsonRpc(request: any): Promise<any> {
+  private async processJsonRpc(
+    request: any,
+    httpReq?: http.IncomingMessage,
+  ): Promise<any> {
     const { jsonrpc, id, method, params } = request;
 
     if (jsonrpc !== "2.0") {
@@ -543,7 +573,7 @@ export class MCPServer {
           result = this.handleToolsList();
           break;
         case "tools/call":
-          result = await this.handleToolCall(params);
+          result = await this.handleToolCall(params, httpReq);
           break;
         default:
           return {
@@ -760,7 +790,10 @@ BEST PRACTICES:
   /**
    * Handle tools/call request
    */
-  private async handleToolCall(params: any): Promise<any> {
+  private async handleToolCall(
+    params: any,
+    httpReq?: http.IncomingMessage,
+  ): Promise<any> {
     const { name, arguments: args } = params;
 
     const config = vscode.workspace.getConfiguration("humanInTheLoop");
@@ -818,6 +851,19 @@ BEST PRACTICES:
     const responsePromise = new Promise<ToolResponse>((resolve, reject) => {
       const timeoutHandler = () => {
         this.pendingRequests.delete(requestId);
+        // Record timeout in history
+        if (this.historyManager) {
+          this.historyManager.updateEntry(
+            requestId,
+            "timeout",
+            undefined,
+            "Request timed out",
+          );
+        }
+        // Notify UI that request timed out
+        if (this.onRequestCancelledCallback) {
+          this.onRequestCancelledCallback(requestId, "Request timed out");
+        }
         resolve({
           id: requestId,
           success: false,
@@ -840,7 +886,52 @@ BEST PRACTICES:
         startTime: Date.now(),
         totalTimeout: timeout,
       });
+
+      // Listen for HTTP connection close (agent disconnected)
+      if (httpReq) {
+        const onClose = () => {
+          const pending = this.pendingRequests.get(requestId);
+          if (pending) {
+            if (pending.timeoutId) {
+              clearTimeout(pending.timeoutId);
+            }
+            this.pendingRequests.delete(requestId);
+            // Record cancellation in history
+            if (this.historyManager) {
+              this.historyManager.updateEntry(
+                requestId,
+                "cancelled",
+                undefined,
+                "Agent disconnected",
+              );
+            }
+            // Notify UI that request was cancelled
+            if (this.onRequestCancelledCallback) {
+              this.onRequestCancelledCallback(
+                requestId,
+                "Agent disconnected",
+              );
+            }
+            resolve({
+              id: requestId,
+              success: false,
+              error: "Agent disconnected before user responded",
+            });
+          }
+        };
+        httpReq.on("close", onClose);
+
+        // Clean up listener when request is resolved
+        responsePromise.finally(() => {
+          httpReq.removeListener("close", onClose);
+        });
+      }
     });
+
+    // Record in history
+    if (this.historyManager) {
+      this.historyManager.addEntry(toolRequest);
+    }
 
     // Notify WebView about new request
     if (this.onRequestCallback) {

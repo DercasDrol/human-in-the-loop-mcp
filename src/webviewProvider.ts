@@ -29,6 +29,37 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
     this.mcpServer.onRequest((request) => {
       this.showRequest(request);
     });
+
+    // Set up request cancelled handler
+    this.mcpServer.onRequestCancelled((requestId, reason) => {
+      this.handleRequestCancelled(requestId, reason);
+    });
+  }
+
+  /**
+   * Handle request cancellation (agent disconnected, timeout, etc.)
+   */
+  private handleRequestCancelled(requestId: string, reason: string): void {
+    // Only handle if this is the current request
+    if (this.currentRequest && this.currentRequest.id === requestId) {
+      this.stopCountdown();
+
+      if (this._view) {
+        const message: ExtensionToWebviewMessage = {
+          type: "requestCancelled",
+          requestId,
+          reason,
+        };
+        this._view.webview.postMessage(message);
+      }
+
+      // Clear current request after a delay to let user see the message
+      setTimeout(() => {
+        if (this.currentRequest?.id === requestId) {
+          this.currentRequest = null;
+        }
+      }, 5000);
+    }
   }
 
   public resolveWebviewView(
@@ -86,6 +117,14 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
       case "togglePause":
         this.togglePause();
+        break;
+
+      case "showInstructions":
+        vscode.commands.executeCommand("humanInTheLoop.showInstructions");
+        break;
+
+      case "showHistory":
+        vscode.commands.executeCommand("humanInTheLoop.showHistory");
         break;
     }
   }
@@ -320,6 +359,41 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             align-items: center;
             padding-bottom: 8px;
             border-bottom: 1px solid var(--vscode-widget-border);
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .header-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .header-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .sticky-timer {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background-color: var(--vscode-editor-background);
+            padding: 8px 0;
+            margin: 0 calc(-1 * var(--container-padding));
+            padding-left: var(--container-padding);
+            padding-right: var(--container-padding);
+            border-bottom: 1px solid var(--vscode-widget-border);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
         }
 
         .server-info {
@@ -736,21 +810,38 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         .markdown-content > :last-child {
             margin-bottom: 0;
         }
+
+        /* Cancelled request banner */
+        .cancelled-banner {
+            background-color: var(--vscode-inputValidation-warningBackground);
+            border: 1px solid var(--vscode-inputValidation-warningBorder);
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 12px;
+            color: var(--vscode-foreground);
+            line-height: 1.5;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <span class="server-info" id="serverInfo">Server: Not started</span>
-            <div class="countdown" id="countdownContainer" style="display: none;">
+            <div class="header-actions">
+                <button id="instructionsBtn" class="header-btn" title="Show Connection Instructions">📋 Instructions</button>
+                <button id="historyBtn" class="header-btn" title="Show Request History">📜 History</button>
+            </div>
+        </div>
+        
+        <div class="sticky-timer" id="stickyTimer" style="display: none;">
+            <div class="countdown" id="countdownContainer">
                 <span>⏱️</span>
                 <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>
                 <button id="pauseBtn" class="icon-btn pause-btn" title="Pause timer" aria-label="Pause timer">⏸️</button>
             </div>
-        </div>
-        
-        <div class="progress-bar" id="progressBar" style="display: none;">
-            <div class="progress-fill" id="progressFill"></div>
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
         </div>
 
         <div class="request-container" id="requestContainer">
@@ -807,6 +898,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             
             // Elements
             const serverInfo = document.getElementById('serverInfo');
+            const stickyTimer = document.getElementById('stickyTimer');
             const countdownContainer = document.getElementById('countdownContainer');
             const countdownTimer = document.getElementById('countdownTimer');
             const pauseBtn = document.getElementById('pauseBtn');
@@ -834,6 +926,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const buttonsToggleBtn = document.getElementById('buttonsToggleBtn');
             const emptyState = document.getElementById('emptyState');
             const mcpConfig = document.getElementById('mcpConfig');
+            const instructionsBtn = document.getElementById('instructionsBtn');
+            const historyBtn = document.getElementById('historyBtn');
 
             let currentRequestId = null;
             let totalTimeout = 120;
@@ -1090,15 +1184,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 requestContainer.classList.add('visible');
                 emptyState.style.display = 'none';
                 
-                // Hide countdown and progress bar for infinite timeout (countdown <= 0)
+                // Show/hide sticky timer for countdown (hide for infinite timeout)
                 if (countdown > 0) {
-                    countdownContainer.style.display = 'flex';
-                    progressBar.style.display = 'block';
+                    stickyTimer.style.display = 'block';
                     updateCountdown(countdown);
                 } else {
                     // Infinite timeout - hide timer UI
-                    countdownContainer.style.display = 'none';
-                    progressBar.style.display = 'none';
+                    stickyTimer.style.display = 'none';
                 }
             }
 
@@ -1148,8 +1240,43 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 currentRequestId = null;
                 requestContainer.classList.remove('visible');
                 emptyState.style.display = 'flex';
-                countdownContainer.style.display = 'none';
-                progressBar.style.display = 'none';
+                stickyTimer.style.display = 'none';
+            }
+
+            // Show request cancelled state
+            function showRequestCancelled(reason) {
+                // Stop accepting responses
+                currentRequestId = null;
+                
+                // Hide countdown and progress
+                stickyTimer.style.display = 'none';
+                
+                // Update title to show cancelled status
+                requestTitle.innerHTML = '🚫 ' + requestTitle.textContent;
+                
+                // Disable all input elements
+                const inputs = requestContainer.querySelectorAll('input, textarea, button');
+                inputs.forEach(input => {
+                    input.disabled = true;
+                    input.style.opacity = '0.5';
+                });
+                
+                // Add cancelled banner at top of message
+                const banner = document.createElement('div');
+                banner.className = 'cancelled-banner';
+                banner.innerHTML = '<strong>⚠️ Request Cancelled</strong><br>' + (reason || 'The agent is no longer waiting for a response.');
+                requestMessage.insertBefore(banner, requestMessage.firstChild);
+                
+                // Auto-clear after 5 seconds
+                setTimeout(() => {
+                    clearRequest();
+                    // Re-enable inputs for future requests
+                    const allInputs = requestContainer.querySelectorAll('input, textarea, button');
+                    allInputs.forEach(input => {
+                        input.disabled = false;
+                        input.style.opacity = '1';
+                    });
+                }, 5000);
             }
 
             // Send response
@@ -1188,6 +1315,20 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             pauseBtn.addEventListener('click', () => {
                 vscode.postMessage({
                     type: 'togglePause'
+                });
+            });
+
+            // Instructions button
+            instructionsBtn.addEventListener('click', () => {
+                vscode.postMessage({
+                    type: 'showInstructions'
+                });
+            });
+
+            // History button
+            historyBtn.addEventListener('click', () => {
+                vscode.postMessage({
+                    type: 'showHistory'
                 });
             });
             
@@ -1348,6 +1489,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                         if (message.settings && message.settings.soundEnabled) {
                             playSound(message.settings.soundType, message.settings.soundVolume);
                         }
+                        break;
+
+                    case 'requestCancelled':
+                        showRequestCancelled(message.reason);
                         break;
                 }
             });
