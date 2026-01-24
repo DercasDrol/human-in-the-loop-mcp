@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.8",
+  "version": "1.0.11",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -83,9 +83,9 @@
         "humanInTheLoop.timeout": {
           "type": "number",
           "default": 120,
-          "minimum": 10,
+          "minimum": 0,
           "maximum": 600,
-          "description": "Timeout in seconds for waiting user response (10-600 seconds)"
+          "description": "Timeout in seconds for waiting user response. Set to 0 for infinite timeout (no auto-timeout)."
         },
         "humanInTheLoop.autoSubmitOnTimeout": {
           "type": "boolean",
@@ -131,28 +131,36 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && node esbuild.js",
+    "check-types": "tsc --noEmit",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && node esbuild.js --production",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
-    "pretest": "npm run compile"
+    "test": "npm run compile-tests && node ./out/test/runTest.js",
+    "compile-tests": "tsc -p ./",
+    "pretest": "npm run compile-tests"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
     "@types/glob": "^8.1.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.100.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "@vscode/test-electron": "^2.3.9",
+    "esbuild": "^0.27.2",
     "eslint": "^8.56.0",
     "glob": "^10.3.10",
     "mocha": "^10.4.0",
+    "npm-run-all": "^4.1.5",
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "isomorphic-dompurify": "^2.35.0",
-    "marked": "^17.0.1"
+    "markdown-it": "^14.1.0"
   }
 }

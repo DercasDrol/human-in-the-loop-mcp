@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.11] - 2026-01-24
+
+### Added
+
+- **Server-side pause functionality** ⏸️
+  - Pause button now actually stops the server timeout, not just UI countdown
+  - When paused, remaining time is saved and timeout is cleared
+  - When resumed, timeout restarts with remaining time
+  - Prevents auto-timeout while user is reading long messages
+
+- **Infinite timeout option** ♾️
+  - Set `humanInTheLoop.timeout` to `0` for no timeout
+  - Countdown timer and progress bar are hidden when timeout is infinite
+  - Request will wait indefinitely until user responds
+  - Useful for complex decisions that need unlimited thinking time
+
+### Changed
+
+- Simplified Markdown documentation in tool descriptions
+  - Removed detailed element lists, now just states "full Markdown support"
+  - Cleaner, more concise tool descriptions
+- Timeout setting minimum changed from 10 to 0 (allows infinite timeout)
+
+### Fixed
+
+- TypeScript null checks for `timeoutId` in pause/resume logic
+
+## [1.0.10] - 2026-01-24
+
+### Added
+
+- **Pause/Resume timer button** ⏸️/▶️
+  - New button next to countdown timer to pause the countdown
+  - Click to pause - timer stops, progress bar grays out
+  - Click again to resume - timer continues from where it stopped
+  - Useful for reading long messages without time pressure
+  - Visual feedback: paused state shows ▶️ icon with gray timer
+
+- **Enhanced Markdown documentation in tool descriptions**
+  - Each tool now includes detailed MARKDOWN SUPPORT section
+  - Lists all supported GFM elements: headers, emphasis, lists, code, tables, etc.
+  - Helps AI agents know they can use rich formatting in messages
+
+### Changed
+
+- Tool descriptions now include comprehensive Markdown examples
+- Improved documentation for `ask_user_text`, `ask_user_confirm`, `ask_user_buttons`
+
+## [1.0.9] - 2026-01-24
+
+### Changed
+
+- **Replaced custom markdown parser with markdown-it** - Architectural improvement
+  - Markdown rendering now happens on extension side (Node.js) instead of WebView
+  - Uses `markdown-it` (v14.1.0) for full GitHub Flavored Markdown support
+    - Chosen over `marked` because markdown-it supports CommonJS (marked v17+ is ESM-only)
+    - "Safe by default" - built-in XSS protection, no DOMPurify needed!
+    - 13M+ weekly downloads, well-maintained
+  - Eliminates all regex escaping issues from v1.0.8
+
+- **Added esbuild for bundling** - Modern build system
+  - Reduces VSIX size from ~1MB to ~161KB (6x smaller!)
+  - All dependencies bundled into single extension.js
+  - Faster extension loading
+
+### Added
+
+- **Full GFM (GitHub Flavored Markdown) support**:
+  - Tables with proper styling (built-in)
+  - Strikethrough (built-in)
+  - Autolinks via `linkify: true`
+  - Line breaks via `breaks: true`
+  - All standard markdown features
+- **New markdownRenderer.ts module** - Clean separation of concerns
+  - `renderMarkdown()` function for secure markdown-to-HTML conversion
+  - `renderMarkdownForWebview()` wrapper with container div
+
+- **Enhanced CSP (Content Security Policy)**:
+  - Added `img-src https: http: data:` to allow images in markdown
+
+- **Table styles for WebView** - Properly styled GFM tables
+
+### Removed
+
+- **Removed parseMarkdown() from WebView JavaScript** - No longer needed
+- **Removed sanitizeUrl() from WebView** - markdown-it handles URL sanitization
+
+### Security
+
+- `html: false` in markdown-it prevents HTML injection at source
+- Built-in URL filtering blocks dangerous schemes:
+  - `javascript:`, `vbscript:` (XSS vectors)
+  - `file:` (local file access)
+  - `data:` (except safe images: gif/png/jpeg/webp)
+- Links automatically get `target="_blank" rel="noopener noreferrer"`
+- No external sanitizer needed - markdown-it is safe by default
+
 ## [1.0.8] - 2026-01-23
 
 ### Fixed
@@ -14,10 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - In template literal (backticks): `\*` → `*`, `\n` → newline, `\[` → `[`, `\/` → `/`
   - Browser received invalid regex like `/^(---|***|___)$/gm` causing SyntaxError
   - JavaScript crashed before event handlers registered → "ready" never sent → sync failure
-  
 - **Fixed all regex patterns in parseMarkdown()** - Doubled escape characters for template literal context:
   - Horizontal rule: `\*\*\*` → `[*]{3}` (character class doesn't need escaping)
-  - Bold: `\*\*` → `[*][*]` 
+  - Bold: `\*\*` → `[*][*]`
   - Italic: `\*` → `[*]`
   - Code blocks: `[\\s\\S]` → `[\\\\s\\\\S]`
   - Links/Images: `\[`, `\]` → `\\[`, `\\]`

@@ -10,6 +10,7 @@ import {
   WebviewToExtensionMessage,
 } from "./types";
 import { MCPServer } from "./mcpServer";
+import { renderMarkdown } from "./markdownRenderer";
 
 export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "humanInTheLoop.mainView";
@@ -17,6 +18,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private currentRequest: ToolRequest | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
+  private isPaused: boolean = false;
+  private currentCountdown: number = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -80,7 +83,34 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
           this.clearRequest();
         }
         break;
+
+      case "togglePause":
+        this.togglePause();
+        break;
     }
+  }
+
+  /**
+   * Toggle pause state of countdown timer
+   */
+  private togglePause(): void {
+    if (!this.currentRequest) {
+      return;
+    }
+
+    // Toggle pause on the MCP server (affects real timeout)
+    const newPauseState = this.mcpServer.togglePauseRequest(
+      this.currentRequest.id,
+    );
+    if (newPauseState !== undefined) {
+      this.isPaused = newPauseState;
+    }
+
+    // Notify webview of pause state
+    this._view?.webview.postMessage({
+      type: "pauseState",
+      isPaused: this.isPaused,
+    });
   }
 
   /**
@@ -152,9 +182,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       const config = vscode.workspace.getConfiguration("humanInTheLoop");
       const timeout = config.get<number>("timeout", 120);
 
+      // Pre-render markdown on extension side for security
+      const messageHtml = renderMarkdown(request.message);
+
       const message: ExtensionToWebviewMessage = {
         type: "newRequest",
         request,
+        messageHtml,
         countdown: timeout,
       };
       this._view.webview.postMessage(message);
@@ -181,19 +215,30 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    */
   private startCountdown(): void {
     this.stopCountdown();
+    this.isPaused = false; // Reset pause state on new request
 
     const config = vscode.workspace.getConfiguration("humanInTheLoop");
-    let countdown = config.get<number>("timeout", 120);
+    this.currentCountdown = config.get<number>("timeout", 120);
+
+    // If timeout is 0, don't run countdown (infinite timeout)
+    if (this.currentCountdown <= 0) {
+      return;
+    }
 
     this.countdownInterval = setInterval(() => {
-      countdown--;
-      if (countdown <= 0) {
+      // Skip countdown decrement if paused
+      if (this.isPaused) {
+        return;
+      }
+
+      this.currentCountdown--;
+      if (this.currentCountdown <= 0) {
         this.stopCountdown();
         this.clearRequest();
       } else if (this._view) {
         const message: ExtensionToWebviewMessage = {
           type: "updateCountdown",
-          countdown,
+          countdown: this.currentCountdown,
         };
         this._view.webview.postMessage(message);
       }
@@ -245,7 +290,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src https: http: data:;">
     <title>Human in the Loop</title>
     <style>
         :root {
@@ -303,6 +348,20 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             animation: pulse 1s infinite;
         }
 
+        .countdown-timer.paused {
+            color: var(--vscode-descriptionForeground);
+            animation: none;
+        }
+
+        .pause-btn {
+            font-size: 12px;
+            padding: 2px 4px;
+        }
+
+        .pause-btn.paused {
+            color: var(--vscode-charts-green);
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -320,6 +379,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             height: 100%;
             background-color: var(--vscode-progressBar-background);
             transition: width 1s linear;
+        }
+
+        .progress-fill.paused {
+            background-color: var(--vscode-descriptionForeground) !important;
         }
 
         .request-container {
@@ -638,6 +701,41 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             border-radius: 4px;
             margin: 8px 0;
         }
+
+        /* GFM Tables */
+        .message table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+        }
+
+        .message th, .message td {
+            border: 1px solid var(--vscode-widget-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .message th {
+            background-color: var(--vscode-editor-selectionBackground);
+            font-weight: 600;
+        }
+
+        .message tr:nth-child(even) {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+
+        /* Markdown content wrapper */
+        .markdown-content {
+            line-height: 1.5;
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
@@ -647,6 +745,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             <div class="countdown" id="countdownContainer" style="display: none;">
                 <span>⏱️</span>
                 <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>
+                <button id="pauseBtn" class="icon-btn pause-btn" title="Pause timer" aria-label="Pause timer">⏸️</button>
             </div>
         </div>
         
@@ -710,6 +809,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const serverInfo = document.getElementById('serverInfo');
             const countdownContainer = document.getElementById('countdownContainer');
             const countdownTimer = document.getElementById('countdownTimer');
+            const pauseBtn = document.getElementById('pauseBtn');
             const progressBar = document.getElementById('progressBar');
             const progressFill = document.getElementById('progressFill');
             const requestContainer = document.getElementById('requestContainer');
@@ -739,6 +839,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             let totalTimeout = 120;
             let currentRequestType = null;
             let currentMessageText = ''; // Store original message text for copying
+            let isPaused = false; // Timer pause state
             let settings = {
                 autoSubmitOnTimeout: false,
                 soundEnabled: true,
@@ -935,118 +1036,19 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
-            // Sanitize URL to prevent javascript: and data: attacks
-            function sanitizeUrl(url) {
-                if (!url) return '#';
-                const trimmed = url.trim().toLowerCase();
-                if (trimmed.startsWith('javascript:') || 
-                    trimmed.startsWith('data:') || 
-                    trimmed.startsWith('vbscript:')) {
-                    return '#';
-                }
-                return url;
-            }
-
-            // Comprehensive markdown parser
-            function parseMarkdown(text) {
-                if (!text) return '';
-                
-                // Escape HTML to prevent XSS
-                let html = text
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
-                
-                // Code blocks - must be processed first
-                html = html.replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, function(match, code) {
-                    return '<pre><code>' + code.trim() + '</code></pre>';
-                });
-                
-                // Inline code
-                html = html.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-                
-                // Headers (# to ######)
-                html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
-                html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
-                html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-                html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-                html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-                html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-                
-                // Blockquotes (> ...)
-                html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-                
-                // Horizontal rule (---, ***, ___)
-                html = html.replace(/^(---|[*]{3}|___)$/gm, '<hr>');
-                
-                // Bold (**text** or __text__)
-                html = html.replace(/[*][*](.+?)[*][*]/g, '<strong>$1</strong>');
-                html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-                
-                // Italic (*text* or _text_)
-                html = html.replace(/[*](.+?)[*]/g, '<em>$1</em>');
-                html = html.replace(/_(.+?)_/g, '<em>$1</em>');
-                
-                // Strikethrough (~~text~~)
-                html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
-                
-                // Links [text](url) - with URL sanitization
-                html = html.replace(/\\[([^\\x5D]+)\\]\\(([^)]+)\\)/g, function(match, text, url) {
-                    return '<a href="' + sanitizeUrl(url) + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
-                });
-                
-                // Images ![alt](url) - with URL sanitization
-                html = html.replace(/!\\[([^\\x5D]*)\\]\\(([^)]+)\\)/g, function(match, alt, url) {
-                    return '<img src="' + sanitizeUrl(url) + '" alt="' + alt + '" style="max-width: 100%; height: auto;">';
-                });
-                
-                // Unordered lists (- item or * item)
-                html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
-                html = html.replace(/(<li>.*<\\/li>)/s, '<ul>$1</ul>');
-                
-                // Ordered lists (1. item)
-                html = html.replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>');
-                
-                // Clean up consecutive list items
-                html = html.replace(/<\\/li>\\n<li>/g, '</li><li>');
-                
-                // Wrap orphaned list items in ul
-                html = html.replace(/(<li>(?:(?!<ul>|<ol>|<\\/ul>|<\\/ol>).)*<\\/li>)+/g, '<ul>$&</ul>');
-                
-                // Line breaks
-                html = html.replace(/\\n\\n/g, '</p><p>');
-                html = html.replace(/\\n/g, '<br>');
-                
-                // Wrap in paragraph if not already wrapped
-                if (!html.startsWith('<') || html.startsWith('<em>') || html.startsWith('<strong>')) {
-                    html = '<p>' + html + '</p>';
-                }
-                
-                // Clean up empty paragraphs
-                html = html.replace(/<p><\\/p>/g, '');
-                html = html.replace(/<p>(<h[1-6]>)/g, '$1');
-                html = html.replace(/(<\\/h[1-6]>)<\\/p>/g, '$1');
-                html = html.replace(/<p>(<pre>)/g, '$1');
-                html = html.replace(/(<\\/pre>)<\\/p>/g, '$1');
-                html = html.replace(/<p>(<ul>)/g, '$1');
-                html = html.replace(/(<\\/ul>)<\\/p>/g, '$1');
-                html = html.replace(/<p>(<blockquote>)/g, '$1');
-                html = html.replace(/(<\\/blockquote>)<\\/p>/g, '$1');
-                html = html.replace(/<p>(<hr>)/g, '$1');
-                html = html.replace(/(<hr>)<\\/p>/g, '$1');
-                
-                return html;
-            }
+            // NOTE: Markdown rendering is now done on extension side using marked.js + DOMPurify
+            // for better security and full markdown support. See markdownRenderer.ts
 
             // Show request
-            function showRequest(request, countdown) {
+            function showRequest(request, countdown, messageHtml) {
                 currentRequestId = request.id;
                 currentRequestType = request.type;
                 totalTimeout = countdown;
                 currentMessageText = request.message; // Store for copy function
 
                 requestTitle.textContent = request.title;
-                requestMessage.innerHTML = parseMarkdown(request.message);
+                // Use pre-rendered HTML from extension (marked + DOMPurify)
+                requestMessage.innerHTML = messageHtml || request.message;
 
                 // Hide all input types and custom inputs
                 textInputContainer.style.display = 'none';
@@ -1087,10 +1089,17 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 // Show request container
                 requestContainer.classList.add('visible');
                 emptyState.style.display = 'none';
-                countdownContainer.style.display = 'flex';
-                progressBar.style.display = 'block';
                 
-                updateCountdown(countdown);
+                // Hide countdown and progress bar for infinite timeout (countdown <= 0)
+                if (countdown > 0) {
+                    countdownContainer.style.display = 'flex';
+                    progressBar.style.display = 'block';
+                    updateCountdown(countdown);
+                } else {
+                    // Infinite timeout - hide timer UI
+                    countdownContainer.style.display = 'none';
+                    progressBar.style.display = 'none';
+                }
             }
 
             // Format seconds as mm:ss or just seconds
@@ -1154,7 +1163,33 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
+            // Update pause button appearance
+            function updatePauseButton() {
+                if (isPaused) {
+                    pauseBtn.textContent = '▶️';
+                    pauseBtn.title = 'Resume timer';
+                    pauseBtn.setAttribute('aria-label', 'Resume timer');
+                    pauseBtn.classList.add('paused');
+                    countdownTimer.classList.add('paused');
+                    progressFill.classList.add('paused');
+                } else {
+                    pauseBtn.textContent = '⏸️';
+                    pauseBtn.title = 'Pause timer';
+                    pauseBtn.setAttribute('aria-label', 'Pause timer');
+                    pauseBtn.classList.remove('paused');
+                    countdownTimer.classList.remove('paused');
+                    progressFill.classList.remove('paused');
+                }
+            }
+
             // Event listeners
+            
+            // Pause/Resume timer button
+            pauseBtn.addEventListener('click', () => {
+                vscode.postMessage({
+                    type: 'togglePause'
+                });
+            });
             
             // Copy message button
             copyMessageBtn.addEventListener('click', async () => {
@@ -1251,15 +1286,25 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 
                 switch (message.type) {
                     case 'newRequest':
-                        showRequest(message.request, message.countdown);
+                        isPaused = false; // Reset pause state on new request
+                        updatePauseButton();
+                        showRequest(message.request, message.countdown, message.messageHtml);
                         break;
 
                     case 'updateCountdown':
+                        // Only update if not paused (extension handles actual pause)
                         updateCountdown(message.countdown);
                         break;
 
                     case 'clearRequest':
+                        isPaused = false;
+                        updatePauseButton();
                         clearRequest();
+                        break;
+
+                    case 'pauseState':
+                        isPaused = message.isPaused;
+                        updatePauseButton();
                         break;
 
                     case 'serverInfo':

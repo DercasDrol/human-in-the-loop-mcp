@@ -341,7 +341,9 @@ export class MCPServer {
       if (this.server) {
         // Cancel all pending requests
         for (const [id, pending] of this.pendingRequests) {
-          clearTimeout(pending.timeoutId);
+          if (pending.timeoutId) {
+            clearTimeout(pending.timeoutId);
+          }
           pending.resolve({
             id,
             success: false,
@@ -382,7 +384,9 @@ export class MCPServer {
   public handleUserResponse(requestId: string, value: string | boolean): void {
     const pending = this.pendingRequests.get(requestId);
     if (pending) {
-      clearTimeout(pending.timeoutId);
+      if (pending.timeoutId) {
+        clearTimeout(pending.timeoutId);
+      }
       this.pendingRequests.delete(requestId);
       pending.resolve({
         id: requestId,
@@ -612,13 +616,13 @@ BEHAVIOR:
 - User sees a text input field with your prompt message
 - User can type any text and submit
 - If timeout expires, returns a timeout error (unless auto-submit is enabled)
-- The prompt message supports full Markdown formatting
+- The prompt message supports full Markdown formatting (GFM)
 
 BEST PRACTICES:
 - Provide clear, specific prompts explaining what input is expected
 - Use placeholder text to show example format (e.g., "/path/to/file" or "sk-...")
 - Keep titles short and descriptive
-- Format prompts with Markdown for better readability`,
+- Use Markdown for better readability (headers, lists, code blocks, etc.)`,
           inputSchema: {
             type: "object",
             properties: {
@@ -660,7 +664,7 @@ BEHAVIOR:
 - User sees Yes and No buttons
 - User can also provide a custom text response instead of Yes/No
 - Returns "Yes", "No", or the custom text entered by user
-- The message supports full Markdown formatting
+- The message supports full Markdown formatting (GFM)
 
 BEST PRACTICES:
 - Make the consequences of Yes/No clear in the message
@@ -703,7 +707,7 @@ BEHAVIOR:
 - User sees buttons for each option you provide
 - User can click a button or enter custom text response
 - Returns the 'value' of the clicked button, or the custom text
-- The message supports full Markdown formatting
+- The message supports full Markdown formatting (GFM)
 
 BEST PRACTICES:
 - Use clear, descriptive button labels
@@ -812,7 +816,7 @@ BEST PRACTICES:
 
     // Create promise for response
     const responsePromise = new Promise<ToolResponse>((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
+      const timeoutHandler = () => {
         this.pendingRequests.delete(requestId);
         resolve({
           id: requestId,
@@ -820,13 +824,21 @@ BEST PRACTICES:
           timedOut: true,
           error: "Request timed out waiting for user response",
         });
-      }, timeout);
+      };
+
+      // If timeout is 0, don't set a timeout (infinite wait)
+      const timeoutId =
+        timeout > 0 ? setTimeout(timeoutHandler, timeout) : null;
 
       this.pendingRequests.set(requestId, {
         request: toolRequest,
         resolve,
         reject,
         timeoutId,
+        remainingTime: timeout,
+        isPaused: false,
+        startTime: Date.now(),
+        totalTimeout: timeout,
       });
     });
 
@@ -892,5 +904,80 @@ BEST PRACTICES:
    */
   public getPendingRequests(): Map<string, PendingRequest> {
     return this.pendingRequests;
+  }
+
+  /**
+   * Pause the timeout for a specific request
+   * @param requestId - The ID of the request to pause
+   * @returns true if paused successfully, false if request not found or already paused
+   */
+  public pauseRequest(requestId: string): boolean {
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending || pending.isPaused) {
+      return false;
+    }
+
+    // Clear the current timeout
+    if (pending.timeoutId) {
+      clearTimeout(pending.timeoutId);
+      pending.timeoutId = null;
+    }
+
+    // Calculate remaining time
+    const elapsed = Date.now() - pending.startTime;
+    pending.remainingTime = Math.max(0, pending.remainingTime - elapsed);
+    pending.isPaused = true;
+
+    return true;
+  }
+
+  /**
+   * Resume the timeout for a specific request
+   * @param requestId - The ID of the request to resume
+   * @returns true if resumed successfully, false if request not found or not paused
+   */
+  public resumeRequest(requestId: string): boolean {
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending || !pending.isPaused) {
+      return false;
+    }
+
+    // If there's remaining time and it's not infinite timeout, restart the timeout
+    if (pending.remainingTime > 0 && pending.totalTimeout > 0) {
+      pending.timeoutId = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        pending.resolve({
+          id: requestId,
+          success: false,
+          timedOut: true,
+          error: "Request timed out waiting for user response",
+        });
+      }, pending.remainingTime);
+    }
+
+    pending.startTime = Date.now();
+    pending.isPaused = false;
+
+    return true;
+  }
+
+  /**
+   * Toggle pause state for a request
+   * @param requestId - The ID of the request to toggle
+   * @returns The new pause state, or undefined if request not found
+   */
+  public togglePauseRequest(requestId: string): boolean | undefined {
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) {
+      return undefined;
+    }
+
+    if (pending.isPaused) {
+      this.resumeRequest(requestId);
+      return false;
+    } else {
+      this.pauseRequest(requestId);
+      return true;
+    }
   }
 }

@@ -13,3 +13,5 @@ eslint.config.*
 *.md
 !README.md
 !CHANGELOG.md
+out/test/**
+esbuild.js

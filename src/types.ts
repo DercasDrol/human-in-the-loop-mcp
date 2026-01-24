@@ -81,12 +81,15 @@ export interface ExtensionToWebviewMessage {
     | "clearRequest"
     | "serverInfo"
     | "settings"
-    | "playSound";
+    | "playSound"
+    | "pauseState";
   request?: ToolRequest;
+  messageHtml?: string; // Pre-rendered markdown HTML
   countdown?: number;
   serverUrl?: string;
   serverPort?: number;
   configStatus?: "not-configured" | "configured" | "running";
+  isPaused?: boolean; // Timer pause state
   settings?: {
     autoSubmitOnTimeout?: boolean;
     soundEnabled?: boolean;
@@ -99,7 +102,7 @@ export interface ExtensionToWebviewMessage {
  * Message from webview to extension
  */
 export interface WebviewToExtensionMessage {
-  type: "response" | "ready";
+  type: "response" | "ready" | "togglePause";
   requestId?: string;
   value?: string | boolean;
 }
@@ -111,5 +114,9 @@ export interface PendingRequest {
   request: ToolRequest;
   resolve: (response: ToolResponse) => void;
   reject: (error: Error) => void;
-  timeoutId: NodeJS.Timeout;
+  timeoutId: NodeJS.Timeout | null;
+  remainingTime: number; // Remaining time in ms when paused
+  isPaused: boolean;
+  startTime: number; // When the current timeout started
+  totalTimeout: number; // Original total timeout in ms
 }
