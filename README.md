@@ -136,13 +136,15 @@ Present multiple options for the user to choose from.
 
 Configure the extension in VS Code Settings (`Ctrl+,`):
 
-| Setting                              | Type    | Default   | Description                                  |
-| ------------------------------------ | ------- | --------- | -------------------------------------------- |
-| `humanInTheLoop.timeout`             | number  | 120       | Response timeout in seconds (10-600)         |
-| `humanInTheLoop.autoSubmitOnTimeout` | boolean | false     | Auto-submit current input when timer expires |
-| `humanInTheLoop.soundEnabled`        | boolean | true      | Play sound on new requests                   |
-| `humanInTheLoop.soundVolume`         | number  | 0.5       | Sound volume (0.0 - 1.0)                     |
-| `humanInTheLoop.soundType`           | string  | "default" | Notification sound type                      |
+| Setting                              | Type    | Default   | Description                                               |
+| ------------------------------------ | ------- | --------- | --------------------------------------------------------- |
+| `humanInTheLoop.timeout`             | number  | 120       | Response timeout in seconds (0-600). 0 = infinite timeout |
+| `humanInTheLoop.autoSubmitOnTimeout` | boolean | false     | Auto-submit current input when timer expires              |
+| `humanInTheLoop.soundEnabled`        | boolean | true      | Play sound on new requests                                |
+| `humanInTheLoop.soundVolume`         | number  | 0.5       | Sound volume (0.0 - 1.0)                                  |
+| `humanInTheLoop.soundType`           | string  | "default" | Notification sound type                                   |
+| `humanInTheLoop.enableLogging`       | boolean | false     | Enable detailed logging (Output > Human in the Loop MCP)  |
+| `humanInTheLoop.bindAddress`         | string  | "0.0.0.0" | Server bind address (see WSL/Remote section below)        |
 
 ### Sound Types
 
@@ -209,7 +211,29 @@ This extension:
 - ✅ Does not collect any telemetry or analytics
 - ✅ Does not send data to external servers
 - ✅ All communication is between VS Code and your local AI agent
-- ✅ Binds to `127.0.0.1` only (not accessible from network)
+- ✅ By default binds to `0.0.0.0` for WSL/Remote compatibility (configurable to `127.0.0.1`)
+
+## WSL & Remote Development
+
+This extension fully supports VS Code Remote Development:
+
+- **WSL** (Windows Subsystem for Linux)
+- **Remote - SSH**
+- **Dev Containers**
+- **GitHub Codespaces**
+
+### How it works
+
+When working in a remote environment, the extension runs in the **workspace context** (remote machine). VS Code automatically forwards the MCP server port to your local machine.
+
+### Bind Address Setting
+
+| Value       | Description                                                    |
+| ----------- | -------------------------------------------------------------- |
+| `0.0.0.0`   | Listen on all interfaces (default, required for WSL/Remote)    |
+| `127.0.0.1` | Listen only on localhost (more restrictive, local-only access) |
+
+If you're only working locally and want stricter network isolation, you can change `humanInTheLoop.bindAddress` to `127.0.0.1`.
 
 ## Requirements
 

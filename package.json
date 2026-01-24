@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.28",
+  "version": "1.0.32",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -26,6 +26,7 @@
     "agent"
   ],
   "extensionKind": [
+    "workspace",
     "ui"
   ],
   "activationEvents": [
@@ -92,6 +93,19 @@
           "type": "boolean",
           "default": false,
           "description": "Enable detailed logging for debugging. Logs will appear in Output > Human in the Loop MCP"
+        },
+        "humanInTheLoop.bindAddress": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "enum": [
+            "0.0.0.0",
+            "127.0.0.1"
+          ],
+          "enumDescriptions": [
+            "Listen on all interfaces (required for WSL/Remote compatibility)",
+            "Listen only on localhost (more restrictive, may not work in WSL)"
+          ],
+          "description": "IP address to bind the MCP server to. Use 0.0.0.0 for WSL/Remote compatibility."
         },
         "humanInTheLoop.soundEnabled": {
           "type": "boolean",

@@ -96,7 +96,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   /**
    * Track a cancellation retry timer for cleanup
    */
-  private trackCancellationRetryTimer(requestId: string, timer: NodeJS.Timeout): void {
+  private trackCancellationRetryTimer(
+    requestId: string,
+    timer: NodeJS.Timeout,
+  ): void {
     if (!this.cancellationRetryTimers.has(requestId)) {
       this.cancellationRetryTimers.set(requestId, []);
     }
@@ -109,7 +112,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private clearCancellationRetryTimers(requestId: string): void {
     const timers = this.cancellationRetryTimers.get(requestId);
     if (timers) {
-      timers.forEach(timer => clearTimeout(timer));
+      timers.forEach((timer) => clearTimeout(timer));
       this.cancellationRetryTimers.delete(requestId);
     }
   }
@@ -119,7 +122,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    */
   private clearAllCancellationRetryTimers(): void {
     this.cancellationRetryTimers.forEach((timers, requestId) => {
-      timers.forEach(timer => clearTimeout(timer));
+      timers.forEach((timer) => clearTimeout(timer));
     });
     this.cancellationRetryTimers.clear();
   }
@@ -414,7 +417,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   public dispose(): void {
     this.stopCountdown();
     this.clearAllCancellationRetryTimers();
-    this.disposables.forEach(d => d.dispose());
+    this.disposables.forEach((d) => d.dispose());
     this.disposables = [];
   }
 

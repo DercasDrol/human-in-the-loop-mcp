@@ -5,8 +5,6 @@
 
 import * as http from "http";
 import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 import {
   ToolRequest,
@@ -37,7 +35,11 @@ const MAX_OPTIONS_COUNT = 50;
  * @param defaultValue - Default value if invalid
  * @returns Sanitized string
  */
-function validateString(value: unknown, maxLength: number, defaultValue: string = ""): string {
+function validateString(
+  value: unknown,
+  maxLength: number,
+  defaultValue: string = "",
+): string {
   if (typeof value !== "string") {
     return defaultValue;
   }
@@ -49,21 +51,24 @@ function validateString(value: unknown, maxLength: number, defaultValue: string 
  * @param options - Options array to validate
  * @returns Validated and sanitized options array
  */
-function validateOptions(options: unknown): Array<{ label: string; value: string }> {
+function validateOptions(
+  options: unknown,
+): Array<{ label: string; value: string }> {
   if (!Array.isArray(options)) {
     return [];
   }
-  
+
   return options
-    .filter((opt): opt is { label: unknown; value: unknown } => 
-      opt !== null && typeof opt === "object"
+    .filter(
+      (opt): opt is { label: unknown; value: unknown } =>
+        opt !== null && typeof opt === "object",
     )
     .slice(0, MAX_OPTIONS_COUNT)
-    .map(opt => ({
+    .map((opt) => ({
       label: validateString(opt.label, MAX_OPTION_LABEL_LENGTH, "Option"),
       value: validateString(opt.value, MAX_OPTION_VALUE_LENGTH, "option"),
     }))
-    .filter(opt => opt.label.length > 0 && opt.value.length > 0);
+    .filter((opt) => opt.label.length > 0 && opt.value.length > 0);
 }
 
 // Generate UUID using crypto
@@ -95,6 +100,7 @@ function extractPortFromUrl(url: string): number | null {
 export class MCPServer {
   private server: http.Server | null = null;
   private port: number = 0;
+  private externalUri: vscode.Uri | null = null;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   // Map from JSON-RPC request id to internal requestId for cancellation lookup
   private jsonRpcIdToRequestId: Map<string | number, string> = new Map();
@@ -133,23 +139,64 @@ export class MCPServer {
   }
 
   /**
-   * Find the mcp.json file path in workspace
+   * Get the external URI for the server (used for port forwarding info)
    */
-  public getMcpJsonPath(): string | null {
+  public getExternalUri(): vscode.Uri | null {
+    return this.externalUri;
+  }
+
+  /**
+   * Register port with VS Code for automatic port forwarding in Remote/WSL/Codespaces
+   * This is crucial for making the MCP server accessible when running remotely
+   */
+  private async registerPortForwarding(port: number): Promise<void> {
+    try {
+      const localUri = vscode.Uri.parse(`http://localhost:${port}`);
+      this.externalUri = await vscode.env.asExternalUri(localUri);
+
+      if (this.externalUri.toString() !== localUri.toString()) {
+        logger.info(
+          `Port forwarding registered: localhost:${port} -> ${this.externalUri.toString()}`,
+        );
+      } else {
+        logger.debug(
+          `Port ${port} registered (no forwarding needed - running locally)`,
+        );
+      }
+    } catch (error) {
+      logger.warn(`Failed to register port forwarding for port ${port}`, error);
+      // Not critical - server still works, just might not be accessible remotely
+    }
+  }
+
+  /**
+   * Find the mcp.json file URI in workspace
+   * Returns vscode.Uri for cross-platform compatibility (WSL, Remote, etc.)
+   */
+  public getMcpJsonUri(): vscode.Uri | null {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
       return null;
     }
-    return path.join(workspaceFolders[0].uri.fsPath, ".vscode", "mcp.json");
+    return vscode.Uri.joinPath(workspaceFolders[0].uri, ".vscode", "mcp.json");
+  }
+
+  /**
+   * Find the mcp.json file path in workspace (legacy, for display purposes)
+   */
+  public getMcpJsonPath(): string | null {
+    const uri = this.getMcpJsonUri();
+    return uri ? uri.fsPath : null;
   }
 
   /**
    * Try to read port from workspace .vscode/mcp.json
    * Returns: { port: number, found: true } or { port: null, found: false, reason: string }
+   * Uses vscode.workspace.fs API for cross-platform compatibility (WSL, Remote, etc.)
    */
-  public getPortFromMcpJson():
-    | { port: number; found: true }
-    | { port: null; found: false; reason: string } {
+  public async getPortFromMcpJson(): Promise<
+    { port: number; found: true } | { port: null; found: false; reason: string }
+  > {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
       logger.debug("No workspace folders found");
@@ -157,16 +204,21 @@ export class MCPServer {
     }
 
     for (const folder of workspaceFolders) {
-      const mcpJsonPath = path.join(folder.uri.fsPath, ".vscode", "mcp.json");
-      logger.debug(`Checking for mcp.json at: ${mcpJsonPath}`);
+      const mcpJsonUri = vscode.Uri.joinPath(folder.uri, ".vscode", "mcp.json");
+      logger.debug(`Checking for mcp.json at: ${mcpJsonUri.toString()}`);
 
       try {
-        if (!fs.existsSync(mcpJsonPath)) {
-          logger.debug(`mcp.json does not exist at ${mcpJsonPath}`);
+        // Check if file exists using workspace.fs.stat
+        try {
+          await vscode.workspace.fs.stat(mcpJsonUri);
+        } catch {
+          logger.debug(`mcp.json does not exist at ${mcpJsonUri.toString()}`);
           continue;
         }
 
-        const content = fs.readFileSync(mcpJsonPath, "utf-8");
+        // Read file using workspace.fs.readFile
+        const contentBytes = await vscode.workspace.fs.readFile(mcpJsonUri);
+        const content = Buffer.from(contentBytes).toString("utf-8");
         logger.debug(`mcp.json content: ${content}`);
 
         const mcpConfig = JSON.parse(content);
@@ -240,7 +292,10 @@ export class MCPServer {
         // mcp.json exists but no matching server config
         return { port: null, found: false, reason: "no-server-config" };
       } catch (error) {
-        logger.error(`Error reading mcp.json from ${mcpJsonPath}`, error);
+        logger.error(
+          `Error reading mcp.json from ${mcpJsonUri.toString()}`,
+          error,
+        );
         return { port: null, found: false, reason: "parse-error" };
       }
     }
@@ -250,6 +305,7 @@ export class MCPServer {
 
   /**
    * Create default mcp.json configuration
+   * Uses vscode.workspace.fs API for cross-platform compatibility (WSL, Remote, etc.)
    */
   public async createDefaultConfig(port: number): Promise<boolean> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -257,28 +313,29 @@ export class MCPServer {
       return false;
     }
 
-    const vscodePath = path.join(workspaceFolders[0].uri.fsPath, ".vscode");
-    const mcpJsonPath = path.join(vscodePath, "mcp.json");
+    const vscodeUri = vscode.Uri.joinPath(workspaceFolders[0].uri, ".vscode");
+    const mcpJsonUri = vscode.Uri.joinPath(vscodeUri, "mcp.json");
 
     try {
       // Create .vscode directory if it doesn't exist
-      if (!fs.existsSync(vscodePath)) {
-        fs.mkdirSync(vscodePath, { recursive: true });
+      try {
+        await vscode.workspace.fs.stat(vscodeUri);
+      } catch {
+        await vscode.workspace.fs.createDirectory(vscodeUri);
       }
 
-      // Check if mcp.json already exists
+      // Check if mcp.json already exists and read it
       let existingConfig: any = { servers: {} };
-      if (fs.existsSync(mcpJsonPath)) {
-        try {
-          const content = fs.readFileSync(mcpJsonPath, "utf-8");
-          existingConfig = JSON.parse(content);
-          if (!existingConfig.servers) {
-            existingConfig.servers = {};
-          }
-        } catch {
-          // If parsing fails, start fresh
-          existingConfig = { servers: {} };
+      try {
+        const contentBytes = await vscode.workspace.fs.readFile(mcpJsonUri);
+        const content = Buffer.from(contentBytes).toString("utf-8");
+        existingConfig = JSON.parse(content);
+        if (!existingConfig.servers) {
+          existingConfig.servers = {};
         }
+      } catch {
+        // If reading fails (file doesn't exist or parse error), start fresh
+        existingConfig = { servers: {} };
       }
 
       // Add our server config
@@ -286,13 +343,14 @@ export class MCPServer {
         url: `http://127.0.0.1:${port}/mcp`,
       };
 
-      // Write the config
-      fs.writeFileSync(
-        mcpJsonPath,
-        JSON.stringify(existingConfig, null, 2),
-        "utf-8",
+      // Write the config using workspace.fs
+      const configContent = JSON.stringify(existingConfig, null, 2);
+      const encoder = new TextEncoder();
+      await vscode.workspace.fs.writeFile(
+        mcpJsonUri,
+        encoder.encode(configContent),
       );
-      logger.info(`Created/updated mcp.json at ${mcpJsonPath}`);
+      logger.info(`Created/updated mcp.json at ${mcpJsonUri.toString()}`);
 
       return true;
     } catch (error) {
@@ -327,12 +385,19 @@ export class MCPServer {
     if (this.serverOperationLock) {
       await this.serverOperationLock;
     }
-    
+
     const startOperation = this._startInternal();
     this.serverOperationLock = startOperation;
-    
+
     try {
-      return await startOperation;
+      const port = await startOperation;
+
+      // Register port for VS Code port forwarding (important for WSL/Remote)
+      if (port !== null) {
+        await this.registerPortForwarding(port);
+      }
+
+      return port;
     } finally {
       this.serverOperationLock = null;
     }
@@ -347,7 +412,7 @@ export class MCPServer {
     }
 
     // Try to get port from workspace mcp.json
-    const portResult = this.getPortFromMcpJson();
+    const portResult = await this.getPortFromMcpJson();
 
     if (!portResult.found) {
       logger.debug(`Cannot start server: ${portResult.reason}`);
@@ -378,13 +443,17 @@ export class MCPServer {
         }
       });
 
-      this.server.listen(targetPort, "127.0.0.1", () => {
+      const bindAddress = vscode.workspace
+        .getConfiguration("humanInTheLoop")
+        .get<string>("bindAddress", "0.0.0.0");
+
+      this.server.listen(targetPort, bindAddress, () => {
         const address = this.server!.address();
         if (address && typeof address === "object") {
           this.port = address.port;
           this.configStatus = "running";
           this.updateStatusBar();
-          logger.server("Started", `port ${this.port}`);
+          logger.server("Started", `port ${this.port} on ${bindAddress}`);
           resolve(this.port);
         } else {
           reject(new Error("Failed to get server address"));
@@ -402,12 +471,17 @@ export class MCPServer {
     if (this.serverOperationLock) {
       await this.serverOperationLock;
     }
-    
+
     const startOperation = this._startWithPortInternal(port);
     this.serverOperationLock = startOperation;
-    
+
     try {
-      return await startOperation;
+      const resultPort = await startOperation;
+
+      // Register port for VS Code port forwarding (important for WSL/Remote)
+      await this.registerPortForwarding(resultPort);
+
+      return resultPort;
     } finally {
       this.serverOperationLock = null;
     }
@@ -435,13 +509,17 @@ export class MCPServer {
         }
       });
 
-      this.server.listen(port, "127.0.0.1", () => {
+      const bindAddress = vscode.workspace
+        .getConfiguration("humanInTheLoop")
+        .get<string>("bindAddress", "0.0.0.0");
+
+      this.server.listen(port, bindAddress, () => {
         const address = this.server!.address();
         if (address && typeof address === "object") {
           this.port = address.port;
           this.configStatus = "running";
           this.updateStatusBar();
-          logger.server("Started", `port ${this.port}`);
+          logger.server("Started", `port ${this.port} on ${bindAddress}`);
           resolve(this.port);
         } else {
           reject(new Error("Failed to get server address"));
@@ -459,10 +537,10 @@ export class MCPServer {
     if (this.serverOperationLock) {
       await this.serverOperationLock;
     }
-    
+
     const stopOperation = this._stopInternal();
     this.serverOperationLock = stopOperation;
-    
+
     try {
       await stopOperation;
     } finally {
@@ -1036,9 +1114,21 @@ BEST PRACTICES:
         toolRequest = {
           id: requestId,
           type: "ask_user_text",
-          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Input Required"),
-          message: validateString(safeArgs.prompt || safeArgs.message, MAX_MESSAGE_LENGTH, ""),
-          placeholder: validateString(safeArgs.placeholder, MAX_PLACEHOLDER_LENGTH, undefined),
+          title: validateString(
+            safeArgs.title,
+            MAX_TITLE_LENGTH,
+            "Input Required",
+          ),
+          message: validateString(
+            safeArgs.prompt || safeArgs.message,
+            MAX_MESSAGE_LENGTH,
+            "",
+          ),
+          placeholder: validateString(
+            safeArgs.placeholder,
+            MAX_PLACEHOLDER_LENGTH,
+            undefined,
+          ),
           timestamp: now,
           serverEndTime,
         } as TextToolRequest;
@@ -1048,7 +1138,11 @@ BEST PRACTICES:
         toolRequest = {
           id: requestId,
           type: "ask_user_confirm",
-          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Confirmation Required"),
+          title: validateString(
+            safeArgs.title,
+            MAX_TITLE_LENGTH,
+            "Confirmation Required",
+          ),
           message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
           timestamp: now,
           serverEndTime,
@@ -1059,7 +1153,11 @@ BEST PRACTICES:
         toolRequest = {
           id: requestId,
           type: "ask_user_buttons",
-          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Selection Required"),
+          title: validateString(
+            safeArgs.title,
+            MAX_TITLE_LENGTH,
+            "Selection Required",
+          ),
           message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
           options: validateOptions(safeArgs.options),
           timestamp: now,

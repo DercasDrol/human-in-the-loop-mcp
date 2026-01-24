@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.32] - 2025-01-25
+
+### Fixed
+
+- **Extension now runs in workspace context (WSL/Remote)** 🎯
+  - Changed `extensionKind` from `["ui"]` to `["workspace", "ui"]`
+  - Extension now prefers to run where the workspace is located (WSL, SSH, Container)
+  - MCP HTTP server now starts in the same environment as the workspace
+  - VS Code will automatically forward the port to the local machine
+  - Copilot can now connect to the MCP server in the correct network context
+
+### Technical
+
+- `extensionKind: ["workspace", "ui"]` means:
+  - First choice: Run in workspace extension host (WSL/Remote)
+  - Fallback: Run in UI extension host (local) if workspace not available
+- The MCP server now listens on the correct network interface for each environment
+
+## [1.0.31] - 2025-01-25
+
+### Fixed
+
+- **Automatic port forwarding for WSL/Remote** 🚀
+  - Added `vscode.env.asExternalUri()` API call to register the server port with VS Code
+  - This triggers VS Code's automatic port forwarding mechanism
+  - The port will now appear in VS Code's "Ports" panel when running in WSL/Remote/Codespaces
+  - Copilot can now successfully connect to the MCP server from Windows when extension runs in WSL
+
+### Technical
+
+- Added `registerPortForwarding()` private method that calls `vscode.env.asExternalUri()`
+- Added `externalUri` property to store the forwarded URI
+- Added `getExternalUri()` public method to retrieve the forwarded URI
+- Both `start()` and `startWithPort()` now call `registerPortForwarding()` after successful server start
+- Logging shows when port forwarding is activated: `Port forwarding registered: localhost:PORT -> forwardedUri`
+
+## [1.0.30] - 2025-01-25
+
+### Fixed
+
+- **WSL/Remote path handling** 🐧
+  - Fixed `mcp.json` not found in WSL due to incorrect path separators (`\mnt\d\...` instead of `/mnt/d/...`)
+  - Replaced Node.js `path.join()` and `fs` module with VS Code's cross-platform APIs
+  - Now uses `vscode.Uri.joinPath()` for path construction
+  - Now uses `vscode.workspace.fs` API for file operations (stat, read, write, createDirectory)
+  - This ensures correct path handling across Windows, WSL, Remote SSH, and other environments
+
+### Technical
+
+- Added `getMcpJsonUri()` method that returns `vscode.Uri` instead of string path
+- `getPortFromMcpJson()` is now async and uses `workspace.fs.readFile()`
+- `createDefaultConfig()` now uses `workspace.fs.writeFile()` and `workspace.fs.createDirectory()`
+- Removed unused `fs` and `path` imports from mcpServer.ts
+
+## [1.0.29] - 2025-01-25
+
+### Fixed
+
+- **WSL/Remote compatibility** 🐧
+  - Fixed MCP server not accessible when VS Code runs in WSL or Remote mode
+  - Server now binds to `0.0.0.0` by default instead of `127.0.0.1`
+  - This allows VS Code Remote to auto-detect and forward the port
+  - Copilot can now connect to the MCP server from Windows when extension runs in WSL
+
+### Added
+
+- **New setting: `humanInTheLoop.bindAddress`**
+  - `"0.0.0.0"` (default) - Listen on all interfaces (WSL/Remote compatible)
+  - `"127.0.0.1"` - Listen only on localhost (more restrictive)
+  - Choose `127.0.0.1` if you need to restrict access to local machine only
+
+### Technical
+
+- Server logs now include bind address: `Started port 3847 on 0.0.0.0`
+- Both `_startInternal()` and `_startWithPortInternal()` use the bindAddress setting
+
 ## [1.0.28] - 2025-01-25
 
 ### Security
