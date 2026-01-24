@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.28] - 2025-01-25
+
+### Security
+
+- **Input validation for MCP tool parameters** 🛡️
+  - Added `validateString()` function with length limits (titles: 200 chars, messages: 50000 chars)
+  - Added `validateOptions()` function with max 50 button options to prevent UI freeze
+  - Malformed or oversized inputs now return clean error messages
+  - Prevents potential memory exhaustion attacks
+
+- **Fixed server start/stop race condition**
+  - Added `serverOperationLock` to serialize start/stop operations
+  - Prevents undefined behavior when rapidly starting/stopping server
+  - Refactored to use internal `_startInternal()`, `_stopInternal()`, `_startWithPortInternal()` methods
+
+- **Fixed cancellation retry timer leak**
+  - Added `cancellationRetryTimers` Map to track pending retry timers
+  - Timers are now properly cleaned up on successful cancellation or max retries
+  - Added `clearCancellationRetryTimers()` and `clearAllCancellationRetryTimers()` methods
+
+- **Added proper dispose for WebviewProvider**
+  - Cleans up countdown interval and all pending timers
+  - Registered in extension.ts subscriptions for proper cleanup on deactivation
+
+### Technical
+
+- Constants: `MAX_TITLE_LENGTH=200`, `MAX_MESSAGE_LENGTH=50000`, `MAX_OPTIONS_COUNT=50`
+- Lock pattern: `async start() { await lock; lock = this._startInternal(); }`
+- Timer tracking: `cancellationRetryTimers: Map<string, NodeJS.Timeout[]>`
+
 ## [1.0.27] - 2025-01-25
 
 ### Added

@@ -24,6 +24,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private countdownInterval: NodeJS.Timeout | null = null;
   private isPaused: boolean = false;
   private currentCountdown: number = 0;
+  private cancellationRetryTimers: Map<string, NodeJS.Timeout[]> = new Map();
+  private disposables: vscode.Disposable[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -46,12 +48,16 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private handleRequestCancelled(requestId: string, reason: string): void {
     logger.request(requestId, "UI handling cancellation", { reason });
 
+    // Clear any existing retry timers for this request
+    this.clearCancellationRetryTimers(requestId);
+
     // If currentRequest hasn't been set yet (race condition), wait a bit
     // This can happen if disconnect fires before showRequest completes
     const attemptCancel = (retryCount: number = 0) => {
       // Check if this is the current request OR if we're still waiting for currentRequest
       if (this.currentRequest && this.currentRequest.id === requestId) {
         logger.request(requestId, "Cancellation applied to UI", { retryCount });
+        this.clearCancellationRetryTimers(requestId);
         this.stopCountdown();
 
         if (this._view) {
@@ -74,15 +80,48 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         logger.debug(
           `Cancellation retry ${retryCount + 1}/5 for request ${requestId}`,
         );
-        setTimeout(() => attemptCancel(retryCount + 1), 100);
+        const timer = setTimeout(() => attemptCancel(retryCount + 1), 100);
+        this.trackCancellationRetryTimer(requestId, timer);
       } else {
         logger.warn(
           `Cancellation failed after 5 retries for request ${requestId}`,
         );
+        this.clearCancellationRetryTimers(requestId);
       }
     };
 
     attemptCancel();
+  }
+
+  /**
+   * Track a cancellation retry timer for cleanup
+   */
+  private trackCancellationRetryTimer(requestId: string, timer: NodeJS.Timeout): void {
+    if (!this.cancellationRetryTimers.has(requestId)) {
+      this.cancellationRetryTimers.set(requestId, []);
+    }
+    this.cancellationRetryTimers.get(requestId)!.push(timer);
+  }
+
+  /**
+   * Clear all cancellation retry timers for a request
+   */
+  private clearCancellationRetryTimers(requestId: string): void {
+    const timers = this.cancellationRetryTimers.get(requestId);
+    if (timers) {
+      timers.forEach(timer => clearTimeout(timer));
+      this.cancellationRetryTimers.delete(requestId);
+    }
+  }
+
+  /**
+   * Clear all cancellation retry timers (for dispose)
+   */
+  private clearAllCancellationRetryTimers(): void {
+    this.cancellationRetryTimers.forEach((timers, requestId) => {
+      timers.forEach(timer => clearTimeout(timer));
+    });
+    this.cancellationRetryTimers.clear();
   }
 
   public resolveWebviewView(
@@ -367,6 +406,16 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    */
   public updateServerInfo(): void {
     this.sendServerInfo();
+  }
+
+  /**
+   * Dispose resources when extension is deactivated
+   */
+  public dispose(): void {
+    this.stopCountdown();
+    this.clearAllCancellationRetryTimers();
+    this.disposables.forEach(d => d.dispose());
+    this.disposables = [];
   }
 
   /**

@@ -22,6 +22,50 @@ import { getLogger } from "./logger";
 // Get logger instance
 const logger = getLogger();
 
+// Input validation constants
+const MAX_TITLE_LENGTH = 200;
+const MAX_MESSAGE_LENGTH = 50000;
+const MAX_PLACEHOLDER_LENGTH = 500;
+const MAX_OPTION_LABEL_LENGTH = 200;
+const MAX_OPTION_VALUE_LENGTH = 1000;
+const MAX_OPTIONS_COUNT = 50;
+
+/**
+ * Validate and sanitize a string input
+ * @param value - Value to validate
+ * @param maxLength - Maximum allowed length
+ * @param defaultValue - Default value if invalid
+ * @returns Sanitized string
+ */
+function validateString(value: unknown, maxLength: number, defaultValue: string = ""): string {
+  if (typeof value !== "string") {
+    return defaultValue;
+  }
+  return value.slice(0, maxLength);
+}
+
+/**
+ * Validate button options array
+ * @param options - Options array to validate
+ * @returns Validated and sanitized options array
+ */
+function validateOptions(options: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(options)) {
+    return [];
+  }
+  
+  return options
+    .filter((opt): opt is { label: unknown; value: unknown } => 
+      opt !== null && typeof opt === "object"
+    )
+    .slice(0, MAX_OPTIONS_COUNT)
+    .map(opt => ({
+      label: validateString(opt.label, MAX_OPTION_LABEL_LENGTH, "Option"),
+      value: validateString(opt.value, MAX_OPTION_VALUE_LENGTH, "option"),
+    }))
+    .filter(opt => opt.label.length > 0 && opt.value.length > 0);
+}
+
 // Generate UUID using crypto
 function generateId(): string {
   return crypto.randomUUID();
@@ -62,6 +106,8 @@ export class MCPServer {
   private statusBarItem: vscode.StatusBarItem;
   private configStatus: "not-configured" | "configured" | "running" =
     "not-configured";
+  // Lock to prevent race conditions during server start/stop
+  private serverOperationLock: Promise<any> | null = null;
 
   constructor(private context: vscode.ExtensionContext) {
     this.statusBarItem = vscode.window.createStatusBarItem(
@@ -274,10 +320,30 @@ export class MCPServer {
   /**
    * Start the MCP server
    * Returns port number if started, or null if no config found
+   * Uses lock to prevent race conditions from rapid calls
    */
   public async start(): Promise<number | null> {
+    // Wait for any pending operation to complete
+    if (this.serverOperationLock) {
+      await this.serverOperationLock;
+    }
+    
+    const startOperation = this._startInternal();
+    this.serverOperationLock = startOperation;
+    
+    try {
+      return await startOperation;
+    } finally {
+      this.serverOperationLock = null;
+    }
+  }
+
+  /**
+   * Internal start implementation
+   */
+  private async _startInternal(): Promise<number | null> {
     if (this.server) {
-      await this.stop();
+      await this._stopInternal();
     }
 
     // Try to get port from workspace mcp.json
@@ -329,10 +395,30 @@ export class MCPServer {
 
   /**
    * Start with a specific port (used when creating new config)
+   * Uses lock to prevent race conditions
    */
   public async startWithPort(port: number): Promise<number> {
+    // Wait for any pending operation to complete
+    if (this.serverOperationLock) {
+      await this.serverOperationLock;
+    }
+    
+    const startOperation = this._startWithPortInternal(port);
+    this.serverOperationLock = startOperation;
+    
+    try {
+      return await startOperation;
+    } finally {
+      this.serverOperationLock = null;
+    }
+  }
+
+  /**
+   * Internal startWithPort implementation
+   */
+  private async _startWithPortInternal(port: number): Promise<number> {
     if (this.server) {
-      await this.stop();
+      await this._stopInternal();
     }
 
     return new Promise((resolve, reject) => {
@@ -366,8 +452,28 @@ export class MCPServer {
 
   /**
    * Stop the MCP server
+   * Uses lock to prevent race conditions
    */
   public async stop(): Promise<void> {
+    // Wait for any pending operation to complete
+    if (this.serverOperationLock) {
+      await this.serverOperationLock;
+    }
+    
+    const stopOperation = this._stopInternal();
+    this.serverOperationLock = stopOperation;
+    
+    try {
+      await stopOperation;
+    } finally {
+      this.serverOperationLock = null;
+    }
+  }
+
+  /**
+   * Internal stop implementation
+   */
+  private async _stopInternal(): Promise<void> {
     return new Promise((resolve) => {
       if (this.server) {
         // Cancel all pending requests
@@ -922,14 +1028,17 @@ BEST PRACTICES:
     const serverEndTime = timeout > 0 ? now + timeout : 0;
     let toolRequest: ToolRequest;
 
+    // Validate and sanitize all input parameters
+    const safeArgs = args || {};
+
     switch (name) {
       case "ask_user_text":
         toolRequest = {
           id: requestId,
           type: "ask_user_text",
-          title: args.title || "Input Required",
-          message: args.prompt || args.message || "",
-          placeholder: args.placeholder,
+          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Input Required"),
+          message: validateString(safeArgs.prompt || safeArgs.message, MAX_MESSAGE_LENGTH, ""),
+          placeholder: validateString(safeArgs.placeholder, MAX_PLACEHOLDER_LENGTH, undefined),
           timestamp: now,
           serverEndTime,
         } as TextToolRequest;
@@ -939,8 +1048,8 @@ BEST PRACTICES:
         toolRequest = {
           id: requestId,
           type: "ask_user_confirm",
-          title: args.title || "Confirmation Required",
-          message: args.message || "",
+          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Confirmation Required"),
+          message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
           timestamp: now,
           serverEndTime,
         } as ConfirmToolRequest;
@@ -950,9 +1059,9 @@ BEST PRACTICES:
         toolRequest = {
           id: requestId,
           type: "ask_user_buttons",
-          title: args.title || "Selection Required",
-          message: args.message || "",
-          options: args.options || [],
+          title: validateString(safeArgs.title, MAX_TITLE_LENGTH, "Selection Required"),
+          message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
+          options: validateOptions(safeArgs.options),
           timestamp: now,
           serverEndTime,
         } as ButtonsToolRequest;

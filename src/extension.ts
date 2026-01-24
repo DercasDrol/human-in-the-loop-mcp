@@ -49,6 +49,7 @@ export async function activate(
     context.extensionUri,
     mcpServer,
   );
+  context.subscriptions.push({ dispose: () => viewProvider?.dispose() });
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
