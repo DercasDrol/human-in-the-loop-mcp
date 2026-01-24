@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.34] - 2025-01-25
+
+### Changed
+
+- **Custom input forms now have full textarea support** 📝
+  - Changed confirm/buttons custom text from `<input>` to `<textarea>` for multiline input
+  - Applied same Shift+Enter behavior: Enter = new line, Shift+Enter = send
+  - Added visual hint "Shift+Enter to send" for both custom input fields
+  - Consistent UX across all text input types
+
+### Fixed
+
+- **Form state preservation when switching tabs** 🔄
+  - User input is now saved when switching to another VS Code extension/tab
+  - When returning to the Human in the Loop panel, previously entered text is restored
+  - Works for all input types: text, confirm custom text, buttons custom text
+  - Custom input panel visibility state is also preserved
+  - Saved values are cleared after successful submission or request cancellation
+
+### UI
+
+- Added `.custom-input-container` CSS with full textarea styling matching `.input-container`
+- Custom input textareas now have consistent 100px minimum height
+
+## [1.0.33] - 2025-01-25
+
+### Changed
+
+- **Improved text input behavior** ⌨️
+  - **Enter** now inserts a new line (multiline input support)
+  - **Shift+Enter** sends the response
+  - **Ctrl+Enter** also inserts a new line
+  - Added visual hint "Shift+Enter to send" below the text input
+  - This allows users to write multi-line responses without accidentally sending
+
+### UI
+
+- Added `.submit-row` wrapper for hint and button alignment
+- Added `.submit-hint` style for keyboard shortcut hint
+
 ## [1.0.32] - 2025-01-25
 
 ### Fixed

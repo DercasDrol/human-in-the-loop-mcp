@@ -73,6 +73,16 @@ Add the MCP server to your project's `.vscode/mcp.json`:
 3. A countdown timer shows the remaining time to respond
 4. Enter your response or click the appropriate button
 
+### Keyboard Shortcuts
+
+| Shortcut      | Action                        |
+| ------------- | ----------------------------- |
+| `Enter`       | Insert new line in text input |
+| `Shift+Enter` | Send response                 |
+| `Ctrl+Enter`  | Insert new line in text input |
+
+> **Tip**: Use `Enter` to write multi-line responses, then `Shift+Enter` to send.
+
 ## Available MCP Tools
 
 Your AI agent can use these tools to interact with users:

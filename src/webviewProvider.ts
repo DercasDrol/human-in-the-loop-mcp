@@ -635,6 +635,19 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             gap: 8px;
         }
 
+        .submit-row {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .submit-hint {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            opacity: 0.8;
+        }
+
         input[type="text"], textarea {
             width: 100%;
             padding: var(--input-padding);
@@ -743,6 +756,34 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
         .custom-input-row button {
             flex-shrink: 0;
+        }
+
+        /* Full-size custom input container (same as ask_user_text) */
+        .custom-input-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .custom-input-container textarea {
+            width: 100%;
+            min-height: 80px;
+            resize: vertical;
+            padding: var(--input-padding);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            font-size: var(--vscode-font-size);
+            font-family: var(--vscode-font-family);
+            box-sizing: border-box;
+        }
+
+        .custom-input-container textarea:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            border-color: var(--vscode-focusBorder);
         }
 
         .empty-state {
@@ -956,7 +997,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             
             <div class="input-container" id="textInputContainer" style="display: none;">
                 <textarea id="textInput" placeholder="Enter your response..." aria-label="Your response"></textarea>
-                <button id="submitTextBtn" class="primary" aria-label="Submit response">Submit</button>
+                <div class="submit-row">
+                    <span class="submit-hint">Shift+Enter to send</span>
+                    <button id="submitTextBtn" class="primary" aria-label="Submit response">Submit</button>
+                </div>
             </div>
 
             <div class="confirm-buttons" id="confirmContainer" style="display: none;">
@@ -965,9 +1009,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 <div class="custom-input-toggle">
                     <button id="confirmCustomToggle" class="toggle-btn" title="Send custom response" aria-label="Toggle custom response input">✏️ Custom response</button>
                 </div>
-                <div class="custom-input-row" id="confirmCustomInput" style="display: none;">
-                    <input type="text" id="confirmCustomText" placeholder="Type custom response..." aria-label="Custom response text">
-                    <button id="confirmCustomSend" class="primary" aria-label="Send custom response">Send</button>
+                <div class="custom-input-container" id="confirmCustomInput" style="display: none;">
+                    <textarea id="confirmCustomText" placeholder="Type custom response..." aria-label="Custom response text"></textarea>
+                    <div class="submit-row">
+                        <span class="submit-hint">Shift+Enter to send</span>
+                        <button id="confirmCustomSend" class="primary" aria-label="Send custom response">Send</button>
+                    </div>
                 </div>
             </div>
 
@@ -977,9 +1024,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             <div class="custom-input-toggle" id="buttonsCustomToggle" style="display: none;">
                 <button id="buttonsToggleBtn" class="toggle-btn" title="Send custom response" aria-label="Toggle custom response input">✏️ Custom response</button>
             </div>
-            <div class="custom-input-row" id="buttonsCustomInput" style="display: none;">
-                <input type="text" id="buttonsCustomText" placeholder="Type custom response..." aria-label="Custom response text">
-                <button id="buttonsCustomSend" class="primary" aria-label="Send custom response">Send</button>
+            <div class="custom-input-container" id="buttonsCustomInput" style="display: none;">
+                <textarea id="buttonsCustomText" placeholder="Type custom response..." aria-label="Custom response text"></textarea>
+                <div class="submit-row">
+                    <span class="submit-hint">Shift+Enter to send</span>
+                    <button id="buttonsCustomSend" class="primary" aria-label="Send custom response">Send</button>
+                </div>
             </div>
         </div>
 
@@ -1039,6 +1089,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             let isPaused = false; // Timer pause state
             let serverEndTime = 0; // Absolute timestamp when server timeout will occur
             let localCountdownInterval = null; // Local countdown timer
+            
+            // Form state preservation - stores input values by requestId
+            let savedFormValues = {};
+            
             let settings = {
                 autoSubmitOnTimeout: false,
                 soundEnabled: true,
@@ -1272,6 +1326,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
             // Show request
             function showRequest(request, countdown, messageHtml, endTime) {
+                // Check if this is the same request (e.g., when returning to webview)
+                const isSameRequest = currentRequestId === request.id;
+                const savedValues = savedFormValues[request.id] || {};
+                
                 currentRequestId = request.id;
                 currentRequestType = request.type;
                 totalTimeout = countdown;
@@ -1291,24 +1349,35 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 buttonsCustomToggle.style.display = 'none';
                 buttonsContainer.innerHTML = '';
 
-                // Show appropriate input
+                // Show appropriate input - restore saved values if returning to same request
                 switch (request.type) {
                     case 'ask_user_text':
                         textInputContainer.style.display = 'flex';
                         textInput.placeholder = request.placeholder || 'Enter your response...';
-                        textInput.value = '';
+                        // Restore saved value or clear for new request
+                        textInput.value = savedValues.textInput || '';
                         textInput.focus();
                         break;
 
                     case 'ask_user_confirm':
                         confirmContainer.style.display = 'flex';
-                        confirmCustomText.value = '';
+                        // Restore saved custom text if any
+                        confirmCustomText.value = savedValues.confirmCustomText || '';
+                        // Restore custom input visibility
+                        if (savedValues.confirmCustomInputVisible) {
+                            confirmCustomInput.style.display = 'flex';
+                        }
                         break;
 
                     case 'ask_user_buttons':
                         buttonsContainer.style.display = 'flex';
                         buttonsCustomToggle.style.display = 'block';
-                        buttonsCustomText.value = '';
+                        // Restore saved custom text if any
+                        buttonsCustomText.value = savedValues.buttonsCustomText || '';
+                        // Restore custom input visibility
+                        if (savedValues.buttonsCustomInputVisible) {
+                            buttonsCustomInput.style.display = 'flex';
+                        }
                         request.options.forEach(option => {
                             const btn = document.createElement('button');
                             btn.textContent = option.label;
@@ -1376,6 +1445,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
             // Clear request
             function clearRequest() {
+                // Clear saved form values for this request
+                if (currentRequestId) {
+                    delete savedFormValues[currentRequestId];
+                }
                 currentRequestId = null;
                 requestContainer.classList.remove('visible');
                 emptyState.style.display = 'flex';
@@ -1421,6 +1494,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             // Send response
             function sendResponse(value) {
                 if (currentRequestId) {
+                    // Clear saved form values after successful send
+                    delete savedFormValues[currentRequestId];
+                    
                     vscode.postMessage({
                         type: 'response',
                         requestId: currentRequestId,
@@ -1494,7 +1570,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             textInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                // Shift+Enter = send response
+                // Enter alone = new line (default textarea behavior)
+                // Ctrl+Enter = new line (default textarea behavior)
+                if (e.key === 'Enter' && e.shiftKey) {
                     e.preventDefault();
                     const value = textInput.value.trim();
                     if (value) {
@@ -1524,7 +1603,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             confirmCustomText.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
+                // Shift+Enter = send response
+                // Enter alone = new line (default textarea behavior)
+                if (e.key === 'Enter' && e.shiftKey) {
                     e.preventDefault();
                     const value = confirmCustomText.value.trim();
                     if (value) {
@@ -1551,12 +1632,59 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             buttonsCustomText.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
+                // Shift+Enter = send response
+                // Enter alone = new line (default textarea behavior)
+                if (e.key === 'Enter' && e.shiftKey) {
                     e.preventDefault();
                     const value = buttonsCustomText.value.trim();
                     if (value) {
                         sendResponse(value);
                     }
+                }
+            });
+
+            // Save form values on input to preserve state when switching tabs
+            textInput.addEventListener('input', () => {
+                if (currentRequestId) {
+                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                    savedFormValues[currentRequestId].textInput = textInput.value;
+                }
+            });
+
+            confirmCustomText.addEventListener('input', () => {
+                if (currentRequestId) {
+                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                    savedFormValues[currentRequestId].confirmCustomText = confirmCustomText.value;
+                }
+            });
+
+            buttonsCustomText.addEventListener('input', () => {
+                if (currentRequestId) {
+                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                    savedFormValues[currentRequestId].buttonsCustomText = buttonsCustomText.value;
+                }
+            });
+
+            // Track custom input visibility state
+            confirmCustomToggle.addEventListener('click', () => {
+                if (currentRequestId) {
+                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                    // Store visibility state after toggle
+                    setTimeout(() => {
+                        savedFormValues[currentRequestId].confirmCustomInputVisible = 
+                            confirmCustomInput.style.display !== 'none';
+                    }, 0);
+                }
+            });
+
+            buttonsToggleBtn.addEventListener('click', () => {
+                if (currentRequestId) {
+                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                    // Store visibility state after toggle
+                    setTimeout(() => {
+                        savedFormValues[currentRequestId].buttonsCustomInputVisible = 
+                            buttonsCustomInput.style.display !== 'none';
+                    }, 0);
                 }
             });
 
