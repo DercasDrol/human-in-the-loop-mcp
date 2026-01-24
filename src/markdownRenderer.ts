@@ -19,6 +19,10 @@
  */
 
 import MarkdownIt from "markdown-it";
+import { getLogger } from "./logger";
+
+// Get logger instance
+const logger = getLogger();
 
 // Configure markdown-it with safe defaults
 const md = new MarkdownIt({
@@ -52,7 +56,7 @@ export function renderMarkdown(text: string): string {
       '<a target="_blank" rel="noopener noreferrer" href=',
     );
   } catch (error) {
-    console.error("Error rendering markdown:", error);
+    logger.error("Error rendering markdown", error);
     // Fallback: escape HTML and return as preformatted text
     const escaped = text
       .replace(/&/g, "&amp;")

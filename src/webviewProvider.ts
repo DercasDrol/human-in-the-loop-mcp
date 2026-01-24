@@ -11,6 +11,10 @@ import {
 } from "./types";
 import { MCPServer } from "./mcpServer";
 import { renderMarkdown } from "./markdownRenderer";
+import { getLogger } from "./logger";
+
+// Get logger instance
+const logger = getLogger();
 
 export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "humanInTheLoop.mainView";
@@ -40,26 +44,45 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    * Handle request cancellation (agent disconnected, timeout, etc.)
    */
   private handleRequestCancelled(requestId: string, reason: string): void {
-    // Only handle if this is the current request
-    if (this.currentRequest && this.currentRequest.id === requestId) {
-      this.stopCountdown();
+    logger.request(requestId, "UI handling cancellation", { reason });
 
-      if (this._view) {
-        const message: ExtensionToWebviewMessage = {
-          type: "requestCancelled",
-          requestId,
-          reason,
-        };
-        this._view.webview.postMessage(message);
-      }
+    // If currentRequest hasn't been set yet (race condition), wait a bit
+    // This can happen if disconnect fires before showRequest completes
+    const attemptCancel = (retryCount: number = 0) => {
+      // Check if this is the current request OR if we're still waiting for currentRequest
+      if (this.currentRequest && this.currentRequest.id === requestId) {
+        logger.request(requestId, "Cancellation applied to UI", { retryCount });
+        this.stopCountdown();
 
-      // Clear current request after a delay to let user see the message
-      setTimeout(() => {
-        if (this.currentRequest?.id === requestId) {
-          this.currentRequest = null;
+        if (this._view) {
+          const message: ExtensionToWebviewMessage = {
+            type: "requestCancelled",
+            requestId,
+            reason,
+          };
+          this._view.webview.postMessage(message);
         }
-      }, 5000);
-    }
+
+        // Clear current request after a delay to let user see the message
+        setTimeout(() => {
+          if (this.currentRequest?.id === requestId) {
+            this.currentRequest = null;
+          }
+        }, 5000);
+      } else if (retryCount < 5) {
+        // Retry up to 5 times with 100ms delay (total 500ms max wait)
+        logger.debug(
+          `Cancellation retry ${retryCount + 1}/5 for request ${requestId}`,
+        );
+        setTimeout(() => attemptCancel(retryCount + 1), 100);
+      } else {
+        logger.warn(
+          `Cancellation failed after 5 retries for request ${requestId}`,
+        );
+      }
+    };
+
+    attemptCancel();
   }
 
   public resolveWebviewView(
@@ -99,8 +122,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    * Handle messages from the webview
    */
   private handleWebviewMessage(message: WebviewToExtensionMessage): void {
+    logger.ui("Webview message received", { type: message.type });
+
     switch (message.type) {
       case "ready":
+        logger.ui("Webview ready");
         this.sendServerInfo();
         this.sendSettings();
         if (this.currentRequest) {
@@ -110,12 +136,16 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
       case "response":
         if (message.requestId && message.value !== undefined) {
+          logger.request(message.requestId, "User response", {
+            value: message.value,
+          });
           this.mcpServer.handleUserResponse(message.requestId, message.value);
           this.clearRequest();
         }
         break;
 
       case "togglePause":
+        logger.ui("Toggle pause requested");
         this.togglePause();
         break;
 
@@ -156,10 +186,14 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    * Show a new request in the webview
    */
   public showRequest(request: ToolRequest): void {
+    logger.request(request.id, "Showing in UI", {
+      type: request.type,
+      title: request.title,
+    });
     this.currentRequest = request;
 
-    // Start countdown
-    this.startCountdown();
+    // Start countdown using server's end time for synchronization
+    this.startCountdown(request.serverEndTime);
 
     // Show the view
     if (this._view) {
@@ -218,17 +252,22 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    */
   private sendRequest(request: ToolRequest): void {
     if (this._view) {
-      const config = vscode.workspace.getConfiguration("humanInTheLoop");
-      const timeout = config.get<number>("timeout", 120);
-
       // Pre-render markdown on extension side for security
       const messageHtml = renderMarkdown(request.message);
+
+      // Calculate initial remaining time from server's end time
+      const serverEndTime = request.serverEndTime || 0;
+      const initialCountdown =
+        serverEndTime > 0
+          ? Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000))
+          : 0;
 
       const message: ExtensionToWebviewMessage = {
         type: "newRequest",
         request,
         messageHtml,
-        countdown: timeout,
+        countdown: initialCountdown,
+        serverEndTime: serverEndTime,
       };
       this._view.webview.postMessage(message);
     }
@@ -250,16 +289,26 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Start countdown timer
+   * Start countdown timer synchronized with server's end time
+   * @param serverEndTime - Absolute timestamp when server timeout will occur (0 = infinite)
    */
-  private startCountdown(): void {
+  private startCountdown(serverEndTime?: number): void {
     this.stopCountdown();
     this.isPaused = false; // Reset pause state on new request
 
-    const config = vscode.workspace.getConfiguration("humanInTheLoop");
-    this.currentCountdown = config.get<number>("timeout", 120);
+    // If no serverEndTime or it's 0, don't run countdown (infinite timeout)
+    if (!serverEndTime || serverEndTime === 0) {
+      return;
+    }
 
-    // If timeout is 0, don't run countdown (infinite timeout)
+    // Calculate initial remaining time based on server's absolute end time
+    const calculateRemaining = (): number => {
+      return Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000));
+    };
+
+    this.currentCountdown = calculateRemaining();
+
+    // If already expired, don't start
     if (this.currentCountdown <= 0) {
       return;
     }
@@ -270,7 +319,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      this.currentCountdown--;
+      // Recalculate from server end time to stay synchronized
+      this.currentCountdown = calculateRemaining();
+
       if (this.currentCountdown <= 0) {
         this.stopCountdown();
         this.clearRequest();
@@ -934,6 +985,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             let currentRequestType = null;
             let currentMessageText = ''; // Store original message text for copying
             let isPaused = false; // Timer pause state
+            let serverEndTime = 0; // Absolute timestamp when server timeout will occur
+            let localCountdownInterval = null; // Local countdown timer
             let settings = {
                 autoSubmitOnTimeout: false,
                 soundEnabled: true,
@@ -1133,11 +1186,44 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             // NOTE: Markdown rendering is now done on extension side using marked.js + DOMPurify
             // for better security and full markdown support. See markdownRenderer.ts
 
+            // Stop local countdown timer
+            function stopLocalCountdown() {
+                if (localCountdownInterval) {
+                    clearInterval(localCountdownInterval);
+                    localCountdownInterval = null;
+                }
+            }
+
+            // Start local countdown timer synchronized with server
+            function startLocalCountdown() {
+                stopLocalCountdown();
+                
+                if (serverEndTime <= 0) {
+                    return; // Infinite timeout, no countdown
+                }
+
+                // Update immediately
+                const updateFromServerTime = () => {
+                    if (isPaused) return;
+                    
+                    const remaining = Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000));
+                    updateCountdown(remaining);
+                    
+                    if (remaining <= 0) {
+                        stopLocalCountdown();
+                    }
+                };
+
+                updateFromServerTime();
+                localCountdownInterval = setInterval(updateFromServerTime, 500); // Update 2x per second for accuracy
+            }
+
             // Show request
-            function showRequest(request, countdown, messageHtml) {
+            function showRequest(request, countdown, messageHtml, endTime) {
                 currentRequestId = request.id;
                 currentRequestType = request.type;
                 totalTimeout = countdown;
+                serverEndTime = endTime || 0; // Store server's absolute end time
                 currentMessageText = request.message; // Store for copy function
 
                 requestTitle.textContent = request.title;
@@ -1185,12 +1271,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 emptyState.style.display = 'none';
                 
                 // Show/hide sticky timer for countdown (hide for infinite timeout)
-                if (countdown > 0) {
+                if (serverEndTime > 0) {
                     stickyTimer.style.display = 'block';
-                    updateCountdown(countdown);
+                    startLocalCountdown(); // Use local timer synced with server
                 } else {
                     // Infinite timeout - hide timer UI
                     stickyTimer.style.display = 'none';
+                    stopLocalCountdown();
                 }
             }
 
@@ -1429,17 +1516,21 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                     case 'newRequest':
                         isPaused = false; // Reset pause state on new request
                         updatePauseButton();
-                        showRequest(message.request, message.countdown, message.messageHtml);
+                        showRequest(message.request, message.countdown, message.messageHtml, message.serverEndTime);
                         break;
 
                     case 'updateCountdown':
-                        // Only update if not paused (extension handles actual pause)
-                        updateCountdown(message.countdown);
+                        // Extension still sends updates, but local timer is primary
+                        // This serves as a backup/sync mechanism
+                        if (!localCountdownInterval) {
+                            updateCountdown(message.countdown);
+                        }
                         break;
 
                     case 'clearRequest':
                         isPaused = false;
                         updatePauseButton();
+                        stopLocalCountdown();
                         clearRequest();
                         break;
 

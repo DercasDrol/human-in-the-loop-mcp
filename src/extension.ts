@@ -10,6 +10,10 @@ import { MCPServer } from "./mcpServer";
 import { HumanInTheLoopViewProvider } from "./webviewProvider";
 import { HistoryManager } from "./historyManager";
 import { HistoryViewProvider } from "./historyViewProvider";
+import { getLogger } from "./logger";
+
+// Get logger instance
+const logger = getLogger();
 
 let mcpServer: MCPServer | null = null;
 let viewProvider: HumanInTheLoopViewProvider | null = null;
@@ -23,7 +27,7 @@ let fileWatcher: vscode.FileSystemWatcher | null = null;
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  console.log("Human in the Loop MCP extension is now active");
+  logger.info("Human in the Loop MCP extension is now active");
 
   // Create history manager
   historyManager = new HistoryManager(context);
@@ -104,17 +108,17 @@ function setupFileWatcher(context: vscode.ExtensionContext): void {
   fileWatcher = vscode.workspace.createFileSystemWatcher("**/.vscode/mcp.json");
 
   fileWatcher.onDidCreate(async () => {
-    console.log("mcp.json created, attempting to start server");
+    logger.info("mcp.json created, attempting to start server");
     await tryStartServer();
   });
 
   fileWatcher.onDidChange(async () => {
-    console.log("mcp.json changed, restarting server");
+    logger.info("mcp.json changed, restarting server");
     await restartServer();
   });
 
   fileWatcher.onDidDelete(async () => {
-    console.log("mcp.json deleted, stopping server");
+    logger.info("mcp.json deleted, stopping server");
     if (mcpServer) {
       await mcpServer.stop();
       // Update WebView to show server stopped
@@ -251,7 +255,7 @@ async function configureServer(): Promise<void> {
  * Deactivate the extension
  */
 export async function deactivate(): Promise<void> {
-  console.log("Human in the Loop MCP extension is now deactivated");
+  logger.info("Human in the Loop MCP extension is now deactivated");
 
   if (mcpServer) {
     await mcpServer.stop();

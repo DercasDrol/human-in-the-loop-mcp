@@ -17,6 +17,10 @@ import {
   PendingRequest,
 } from "./types";
 import { HistoryManager } from "./historyManager";
+import { getLogger } from "./logger";
+
+// Get logger instance
+const logger = getLogger();
 
 // Generate UUID using crypto
 function generateId(): string {
@@ -48,6 +52,8 @@ export class MCPServer {
   private server: http.Server | null = null;
   private port: number = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
+  // Map from JSON-RPC request id to internal requestId for cancellation lookup
+  private jsonRpcIdToRequestId: Map<string | number, string> = new Map();
   private onRequestCallback: ((request: ToolRequest) => void) | null = null;
   private onRequestCancelledCallback:
     | ((requestId: string, reason: string) => void)
@@ -100,28 +106,30 @@ export class MCPServer {
     | { port: null; found: false; reason: string } {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-      console.log("No workspace folders found");
+      logger.debug("No workspace folders found");
       return { port: null, found: false, reason: "no-workspace" };
     }
 
     for (const folder of workspaceFolders) {
       const mcpJsonPath = path.join(folder.uri.fsPath, ".vscode", "mcp.json");
-      console.log(`Checking for mcp.json at: ${mcpJsonPath}`);
+      logger.debug(`Checking for mcp.json at: ${mcpJsonPath}`);
 
       try {
         if (!fs.existsSync(mcpJsonPath)) {
-          console.log(`mcp.json does not exist at ${mcpJsonPath}`);
+          logger.debug(`mcp.json does not exist at ${mcpJsonPath}`);
           continue;
         }
 
         const content = fs.readFileSync(mcpJsonPath, "utf-8");
-        console.log(`mcp.json content: ${content}`);
+        logger.debug(`mcp.json content: ${content}`);
 
         const mcpConfig = JSON.parse(content);
 
         // Look for human-in-the-loop or interactive-m server configuration
         const servers = mcpConfig.servers || mcpConfig.mcpServers || {};
-        console.log(`Found servers in mcp.json:`, Object.keys(servers));
+        logger.debug(
+          `Found servers in mcp.json: ${Object.keys(servers).join(", ")}`,
+        );
 
         // Try different possible server names
         const serverNames = [
@@ -135,11 +143,13 @@ export class MCPServer {
         for (const name of serverNames) {
           const server = servers[name];
           if (server) {
-            console.log(`Found server config for "${name}":`, server);
+            logger.debug(
+              `Found server config for "${name}": ${JSON.stringify(server)}`,
+            );
 
             // Check for direct port property
             if (server.port && typeof server.port === "number") {
-              console.log(
+              logger.info(
                 `Found port ${server.port} in mcp.json server "${name}"`,
               );
               return { port: server.port, found: true };
@@ -147,17 +157,17 @@ export class MCPServer {
 
             // Check for URL property
             if (server.url && typeof server.url === "string") {
-              console.log(
+              logger.debug(
                 `Found URL "${server.url}" in mcp.json server "${name}"`,
               );
               const port = extractPortFromUrl(server.url);
               if (port) {
-                console.log(
+                logger.info(
                   `Extracted port ${port} from URL in mcp.json server "${name}"`,
                 );
                 return { port, found: true };
               } else {
-                console.log(`Failed to extract port from URL: ${server.url}`);
+                logger.warn(`Failed to extract port from URL: ${server.url}`);
               }
             }
           }
@@ -173,7 +183,7 @@ export class MCPServer {
           ) {
             const port = extractPortFromUrl(srv.url);
             if (port) {
-              console.log(
+              logger.info(
                 `Extracted port ${port} from URL in mcp.json server "${name}"`,
               );
               return { port, found: true };
@@ -184,7 +194,7 @@ export class MCPServer {
         // mcp.json exists but no matching server config
         return { port: null, found: false, reason: "no-server-config" };
       } catch (error) {
-        console.log(`Error reading mcp.json from ${mcpJsonPath}:`, error);
+        logger.error(`Error reading mcp.json from ${mcpJsonPath}`, error);
         return { port: null, found: false, reason: "parse-error" };
       }
     }
@@ -236,11 +246,11 @@ export class MCPServer {
         JSON.stringify(existingConfig, null, 2),
         "utf-8",
       );
-      console.log(`Created/updated mcp.json at ${mcpJsonPath}`);
+      logger.info(`Created/updated mcp.json at ${mcpJsonPath}`);
 
       return true;
     } catch (error) {
-      console.error("Failed to create mcp.json:", error);
+      logger.error("Failed to create mcp.json", error);
       return false;
     }
   }
@@ -274,14 +284,14 @@ export class MCPServer {
     const portResult = this.getPortFromMcpJson();
 
     if (!portResult.found) {
-      console.log(`Cannot start server: ${portResult.reason}`);
+      logger.debug(`Cannot start server: ${portResult.reason}`);
       this.configStatus = "not-configured";
       this.updateStatusBar();
       return null;
     }
 
     const targetPort = portResult.port;
-    console.log(`Using port from mcp.json: ${targetPort}`);
+    logger.info(`Using port from mcp.json: ${targetPort}`);
     this.configStatus = "configured";
 
     return new Promise((resolve, reject) => {
@@ -290,7 +300,7 @@ export class MCPServer {
       });
 
       this.server.on("error", (error: NodeJS.ErrnoException) => {
-        console.error("MCP Server error:", error);
+        logger.error("MCP Server error", error);
         if (error.code === "EADDRINUSE") {
           reject(
             new Error(
@@ -308,7 +318,7 @@ export class MCPServer {
           this.port = address.port;
           this.configStatus = "running";
           this.updateStatusBar();
-          console.log(`MCP Server started on port ${this.port}`);
+          logger.server("Started", `port ${this.port}`);
           resolve(this.port);
         } else {
           reject(new Error("Failed to get server address"));
@@ -331,7 +341,7 @@ export class MCPServer {
       });
 
       this.server.on("error", (error: NodeJS.ErrnoException) => {
-        console.error("MCP Server error:", error);
+        logger.error("MCP Server error", error);
         if (error.code === "EADDRINUSE") {
           reject(new Error(`Port ${port} is already in use`));
         } else {
@@ -345,7 +355,7 @@ export class MCPServer {
           this.port = address.port;
           this.configStatus = "running";
           this.updateStatusBar();
-          console.log(`MCP Server started on port ${this.port}`);
+          logger.server("Started", `port ${this.port}`);
           resolve(this.port);
         } else {
           reject(new Error("Failed to get server address"));
@@ -365,6 +375,9 @@ export class MCPServer {
           if (pending.timeoutId) {
             clearTimeout(pending.timeoutId);
           }
+          if (pending.checkIntervalId) {
+            clearInterval(pending.checkIntervalId);
+          }
           pending.resolve({
             id,
             success: false,
@@ -372,6 +385,7 @@ export class MCPServer {
           });
         }
         this.pendingRequests.clear();
+        this.jsonRpcIdToRequestId.clear();
 
         this.server.close(() => {
           this.server = null;
@@ -400,6 +414,17 @@ export class MCPServer {
   }
 
   /**
+   * Delete a pending request and clean up associated mappings
+   */
+  private deletePendingRequest(requestId: string): void {
+    const pending = this.pendingRequests.get(requestId);
+    if (pending?.jsonRpcId !== undefined) {
+      this.jsonRpcIdToRequestId.delete(pending.jsonRpcId);
+    }
+    this.pendingRequests.delete(requestId);
+  }
+
+  /**
    * Handle user response from WebView
    */
   public handleUserResponse(requestId: string, value: string | boolean): void {
@@ -408,7 +433,10 @@ export class MCPServer {
       if (pending.timeoutId) {
         clearTimeout(pending.timeoutId);
       }
-      this.pendingRequests.delete(requestId);
+      if (pending.checkIntervalId) {
+        clearInterval(pending.checkIntervalId);
+      }
+      this.deletePendingRequest(requestId);
 
       // Record response in history
       if (this.historyManager) {
@@ -519,7 +547,13 @@ export class MCPServer {
 
       try {
         const jsonRpcRequest = JSON.parse(body);
-        const response = await this.processJsonRpc(jsonRpcRequest, req);
+
+        // Log all incoming requests for debugging
+        logger.mcp("IN", jsonRpcRequest);
+
+        const response = await this.processJsonRpc(jsonRpcRequest, req, res);
+
+        logger.mcp("OUT", response);
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(response));
@@ -548,6 +582,7 @@ export class MCPServer {
   private async processJsonRpc(
     request: any,
     httpReq?: http.IncomingMessage,
+    httpRes?: http.ServerResponse,
   ): Promise<any> {
     const { jsonrpc, id, method, params } = request;
 
@@ -569,11 +604,16 @@ export class MCPServer {
         case "notifications/initialized":
           result = {};
           break;
+        case "notifications/cancelled":
+          // Handle MCP cancellation notification
+          this.handleCancellation(params);
+          result = {}; // Notifications don't require a response, but we return empty for consistency
+          break;
         case "tools/list":
           result = this.handleToolsList();
           break;
         case "tools/call":
-          result = await this.handleToolCall(params, httpReq);
+          result = await this.handleToolCall(params, httpReq, httpRes, id);
           break;
         default:
           return {
@@ -596,6 +636,75 @@ export class MCPServer {
         id,
         error: { code: -32603, message: "Internal error", data: errorMessage },
       };
+    }
+  }
+
+  /**
+   * Handle MCP notifications/cancelled - cancel a pending request
+   */
+  private handleCancellation(params: any): void {
+    const { requestId: jsonRpcRequestId, reason } = params || {};
+
+    if (jsonRpcRequestId === undefined) {
+      logger.warn("Cancellation notification received without requestId");
+      return;
+    }
+
+    // Lookup internal requestId from JSON-RPC id mapping
+    const internalRequestId = this.jsonRpcIdToRequestId.get(jsonRpcRequestId);
+
+    logger.request(
+      internalRequestId || String(jsonRpcRequestId),
+      "Cancellation received",
+      { jsonRpcId: jsonRpcRequestId, reason: reason || "No reason provided" },
+    );
+
+    if (!internalRequestId) {
+      logger.warn(
+        `No internal requestId found for JSON-RPC id ${jsonRpcRequestId}`,
+      );
+      return;
+    }
+
+    const pending = this.pendingRequests.get(internalRequestId);
+    if (pending) {
+      if (pending.timeoutId) {
+        clearTimeout(pending.timeoutId);
+      }
+      if (pending.checkIntervalId) {
+        clearInterval(pending.checkIntervalId);
+      }
+      this.deletePendingRequest(internalRequestId);
+
+      // Record cancellation in history
+      if (this.historyManager) {
+        this.historyManager.updateEntry(
+          internalRequestId,
+          "cancelled",
+          undefined,
+          reason || "Request cancelled by agent",
+        );
+      }
+
+      // Notify UI that request was cancelled
+      if (this.onRequestCancelledCallback) {
+        this.onRequestCancelledCallback(
+          internalRequestId,
+          reason || "Request cancelled by agent",
+        );
+      }
+
+      pending.resolve({
+        id: internalRequestId,
+        success: false,
+        error: reason || "Request cancelled by agent",
+      });
+
+      logger.request(internalRequestId, "Cancelled successfully");
+    } else {
+      logger.warn(
+        `No pending request found for internal id ${internalRequestId}`,
+      );
     }
   }
 
@@ -793,6 +902,8 @@ BEST PRACTICES:
   private async handleToolCall(
     params: any,
     httpReq?: http.IncomingMessage,
+    httpRes?: http.ServerResponse,
+    jsonRpcId?: string | number,
   ): Promise<any> {
     const { name, arguments: args } = params;
 
@@ -800,6 +911,15 @@ BEST PRACTICES:
     const timeout = config.get<number>("timeout", 120) * 1000;
 
     const requestId = generateId();
+
+    // Store mapping from JSON-RPC id to internal requestId for cancellation lookup
+    if (jsonRpcId !== undefined) {
+      this.jsonRpcIdToRequestId.set(jsonRpcId, requestId);
+    }
+
+    const now = Date.now();
+    // Calculate absolute end time for UI synchronization (0 = infinite)
+    const serverEndTime = timeout > 0 ? now + timeout : 0;
     let toolRequest: ToolRequest;
 
     switch (name) {
@@ -810,7 +930,8 @@ BEST PRACTICES:
           title: args.title || "Input Required",
           message: args.prompt || args.message || "",
           placeholder: args.placeholder,
-          timestamp: Date.now(),
+          timestamp: now,
+          serverEndTime,
         } as TextToolRequest;
         break;
 
@@ -820,7 +941,8 @@ BEST PRACTICES:
           type: "ask_user_confirm",
           title: args.title || "Confirmation Required",
           message: args.message || "",
-          timestamp: Date.now(),
+          timestamp: now,
+          serverEndTime,
         } as ConfirmToolRequest;
         break;
 
@@ -831,7 +953,8 @@ BEST PRACTICES:
           title: args.title || "Selection Required",
           message: args.message || "",
           options: args.options || [],
-          timestamp: Date.now(),
+          timestamp: now,
+          serverEndTime,
         } as ButtonsToolRequest;
         break;
 
@@ -849,8 +972,14 @@ BEST PRACTICES:
 
     // Create promise for response
     const responsePromise = new Promise<ToolResponse>((resolve, reject) => {
+      let checkIntervalId: NodeJS.Timeout | null = null;
+
       const timeoutHandler = () => {
-        this.pendingRequests.delete(requestId);
+        // Clear check interval
+        if (checkIntervalId) {
+          clearInterval(checkIntervalId);
+        }
+        this.deletePendingRequest(requestId);
         // Record timeout in history
         if (this.historyManager) {
           this.historyManager.updateEntry(
@@ -876,56 +1005,112 @@ BEST PRACTICES:
       const timeoutId =
         timeout > 0 ? setTimeout(timeoutHandler, timeout) : null;
 
+      // Listen for HTTP connection close (agent disconnected)
+      // Use both event listeners and periodic polling for reliable detection
+      let disconnected = false;
+
+      const handleDisconnect = (source: string) => {
+        // Only handle once and if response was NOT successfully sent
+        if (disconnected || (httpRes && httpRes.writableFinished)) {
+          return;
+        }
+        disconnected = true;
+
+        // Clear check interval
+        if (checkIntervalId) {
+          clearInterval(checkIntervalId);
+        }
+
+        const pending = this.pendingRequests.get(requestId);
+        if (pending) {
+          if (pending.timeoutId) {
+            clearTimeout(pending.timeoutId);
+          }
+          if (pending.checkIntervalId) {
+            clearInterval(pending.checkIntervalId);
+          }
+          this.deletePendingRequest(requestId);
+          // Record cancellation in history
+          if (this.historyManager) {
+            this.historyManager.updateEntry(
+              requestId,
+              "cancelled",
+              undefined,
+              `Agent disconnected (${source})`,
+            );
+          }
+          // Notify UI that request was cancelled
+          if (this.onRequestCancelledCallback) {
+            this.onRequestCancelledCallback(requestId, "Agent disconnected");
+          }
+          resolve({
+            id: requestId,
+            success: false,
+            error: "Agent disconnected before user responded",
+          });
+        }
+      };
+
+      // Listen for client disconnection
+      // Be careful with events that can fire prematurely in HTTP keep-alive connections
+      if (httpReq) {
+        // Only track error events on request - 'close' can fire normally
+        httpReq.on("error", (err) => {
+          handleDisconnect(`request error: ${err.message}`);
+        });
+      }
+
+      if (httpRes) {
+        // Track response close - but only if response was NOT successfully finished
+        httpRes.on("close", () => {
+          // Check if response was NOT successfully finished
+          if (!httpRes.writableFinished) {
+            handleDisconnect("response close (not finished)");
+          }
+        });
+
+        httpRes.on("error", (err) => {
+          handleDisconnect(`response error: ${err.message}`);
+        });
+
+        // Socket event listeners
+        const socket = httpRes.socket;
+        if (socket) {
+          // Enable TCP keep-alive with short interval for faster disconnect detection
+          // This makes the OS send keep-alive probes to detect dead connections
+          socket.setKeepAlive(true, 1000); // 1 second initial delay
+
+          // Only listen for error - 'close' and 'end' can fire prematurely in HTTP
+          socket.on("error", (err) => handleDisconnect(`socket error: ${err}`));
+
+          // Periodic socket state checking (every 500ms)
+          // This is the most reliable method for detecting disconnections
+          checkIntervalId = setInterval(() => {
+            // Check multiple indicators of socket health
+            if (socket.destroyed) {
+              handleDisconnect("socket polling: destroyed");
+              return;
+            }
+            if (!socket.writable) {
+              handleDisconnect("socket polling: not writable");
+              return;
+            }
+          }, 500);
+        }
+      }
+
       this.pendingRequests.set(requestId, {
         request: toolRequest,
         resolve,
         reject,
         timeoutId,
+        checkIntervalId,
         remainingTime: timeout,
         isPaused: false,
         startTime: Date.now(),
         totalTimeout: timeout,
+        jsonRpcId,
       });
-
-      // Listen for HTTP connection close (agent disconnected)
-      if (httpReq) {
-        const onClose = () => {
-          const pending = this.pendingRequests.get(requestId);
-          if (pending) {
-            if (pending.timeoutId) {
-              clearTimeout(pending.timeoutId);
-            }
-            this.pendingRequests.delete(requestId);
-            // Record cancellation in history
-            if (this.historyManager) {
-              this.historyManager.updateEntry(
-                requestId,
-                "cancelled",
-                undefined,
-                "Agent disconnected",
-              );
-            }
-            // Notify UI that request was cancelled
-            if (this.onRequestCancelledCallback) {
-              this.onRequestCancelledCallback(
-                requestId,
-                "Agent disconnected",
-              );
-            }
-            resolve({
-              id: requestId,
-              success: false,
-              error: "Agent disconnected before user responded",
-            });
-          }
-        };
-        httpReq.on("close", onClose);
-
-        // Clean up listener when request is resolved
-        responsePromise.finally(() => {
-          httpReq.removeListener("close", onClose);
-        });
-      }
     });
 
     // Record in history
@@ -1036,7 +1221,7 @@ BEST PRACTICES:
     // If there's remaining time and it's not infinite timeout, restart the timeout
     if (pending.remainingTime > 0 && pending.totalTimeout > 0) {
       pending.timeoutId = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
+        this.deletePendingRequest(requestId);
         pending.resolve({
           id: requestId,
           success: false,

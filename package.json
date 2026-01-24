@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.14",
+  "version": "1.0.27",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -73,20 +73,6 @@
         "category": "Human in the Loop"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "humanInTheLoop.showInstructions",
-          "group": "navigation",
-          "when": "view == humanInTheLoop.mainView"
-        },
-        {
-          "command": "humanInTheLoop.showHistory",
-          "group": "navigation",
-          "when": "view == humanInTheLoop.mainView"
-        }
-      ]
-    },
     "configuration": {
       "title": "Human in the Loop MCP",
       "properties": {
@@ -101,6 +87,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically submit the current input when timeout is reached"
+        },
+        "humanInTheLoop.enableLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable detailed logging for debugging. Logs will appear in Output > Human in the Loop MCP"
         },
         "humanInTheLoop.soundEnabled": {
           "type": "boolean",

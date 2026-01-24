@@ -27,6 +27,8 @@ export interface BaseToolRequest {
   title: string;
   message: string;
   timestamp: number;
+  /** Absolute timestamp when server timeout will occur (for UI sync) */
+  serverEndTime?: number;
 }
 
 /**
@@ -87,6 +89,8 @@ export interface ExtensionToWebviewMessage {
   request?: ToolRequest;
   messageHtml?: string; // Pre-rendered markdown HTML
   countdown?: number;
+  /** Absolute timestamp when server timeout will occur (for UI sync) */
+  serverEndTime?: number;
   serverUrl?: string;
   serverPort?: number;
   configStatus?: "not-configured" | "configured" | "running";
@@ -106,7 +110,12 @@ export interface ExtensionToWebviewMessage {
  * Message from webview to extension
  */
 export interface WebviewToExtensionMessage {
-  type: "response" | "ready" | "togglePause" | "showInstructions" | "showHistory";
+  type:
+    | "response"
+    | "ready"
+    | "togglePause"
+    | "showInstructions"
+    | "showHistory";
   requestId?: string;
   value?: string | boolean;
 }
@@ -119,10 +128,12 @@ export interface PendingRequest {
   resolve: (response: ToolResponse) => void;
   reject: (error: Error) => void;
   timeoutId: NodeJS.Timeout | null;
+  checkIntervalId: NodeJS.Timeout | null; // Interval for socket state checking
   remainingTime: number; // Remaining time in ms when paused
   isPaused: boolean;
   startTime: number; // When the current timeout started
   totalTimeout: number; // Original total timeout in ms
+  jsonRpcId?: string | number; // Original JSON-RPC request id for mapping cleanup
 }
 
 /**

@@ -5,6 +5,187 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.27] - 2025-01-25
+
+### Added
+
+- **Configurable logging system** 📝
+  - New `humanInTheLoop.enableLogging` setting to enable detailed debugging
+  - Logs appear in Output panel → "Human in the Loop MCP"
+  - Structured logging with timestamps and categories (MCP, SERVER, REQUEST, UI)
+  - Errors and warnings always logged regardless of setting
+
+### Changed
+
+- **Replaced all console.log with Logger utility**
+  - Clean console output by default (no spam)
+  - Full debug info available when `enableLogging: true`
+  - MCP protocol messages logged with `logger.mcp("IN"/"OUT", data)`
+  - Request lifecycle logged with `logger.request(id, event, details)`
+  - UI events logged with `logger.ui(event, details)`
+
+### Technical
+
+- Created `Logger` singleton class (`src/logger.ts`)
+- Logger categories: `debug`, `info`, `warn`, `error`, `mcp`, `server`, `request`, `ui`
+- Logging respects `humanInTheLoop.enableLogging` configuration
+- `warn` and `error` always output to both Output panel and console
+
+## [1.0.26] - 2025-01-25
+
+### Fixed
+
+- **Critical: Agent cancellation detection now works correctly** 🎯
+  - **Root cause identified**: Copilot sends `notifications/cancelled` with JSON-RPC request id (e.g., `3`), but we were looking up requests by internal UUID
+  - **Solution**: Added mapping from JSON-RPC request id to internal request id
+  - When agent stops, UI now correctly shows cancellation message instead of staying stuck
+  - Panel clears properly after 5 seconds allowing for new requests
+
+### Technical
+
+- Added `jsonRpcIdToRequestId: Map<string | number, string>` for id translation
+- Added `jsonRpcId` field to `PendingRequest` interface for reverse lookup
+- Modified `handleToolCall()` to accept and store JSON-RPC id
+- Modified `handleCancellation()` to lookup internal id from JSON-RPC id
+- Created `deletePendingRequest()` helper method for consistent cleanup
+- All pending request deletions now properly clean up both maps
+
+## [1.0.25] - 2025-01-24
+
+### Added
+
+- **Debug logging for MCP messages** 🔍
+  - Added logging of all incoming JSON-RPC requests and responses
+  - Helps diagnose agent communication issues
+  - Logs include `[MCP] Received:` and `[MCP] Response:` prefixes
+
+## [1.0.24] - 2025-01-24
+
+### Added
+
+- **MCP protocol cancellation support** 🛑
+  - Added handler for `notifications/cancelled` JSON-RPC method
+  - Follows MCP specification for proper cancellation handling
+  - Records cancellation reason in history
+
+## [1.0.23] - 2025-01-24
+
+### Fixed
+
+- **Removed false-positive disconnect detection** 🔧
+  - Removed problematic socket events (`close`, `end`, `setTimeout`) that fired immediately
+  - Kept only reliable detection: `socket.on('error')` and polling for `socket.destroyed`/`socket.writable`
+  - No more "Agent disconnected" errors while agent is still running
+
+## [1.0.22] - 2025-01-24
+
+### Fixed
+
+- **Race condition in cancellation handling** ⚡
+  - Added retry mechanism (5 attempts × 100ms) for cancellation events
+  - Fixes case where cancellation arrives before currentRequest is set
+  - Prevents stuck UI when agent stops during request setup
+
+## [1.0.21] - 2025-01-24
+
+### Added
+
+- **Aggressive disconnect detection** (reverted in 1.0.23)
+  - Added socket timeout and multiple event listeners
+  - Caused false positives - immediate "Agent disconnected" errors
+
+## [1.0.20] - 2025-01-24
+
+### Fixed
+
+- **Removed duplicate History/Instructions buttons** 🧹
+  - Removed old-style span buttons, kept only new button-style elements
+  - Clean UI with single set of header buttons
+
+### Added
+
+- **Initial disconnect detection attempt**
+  - Added `socket.setKeepAlive` for TCP keep-alive probes
+  - Added extended polling checks for socket state
+
+## [1.0.18] - 2026-01-24
+
+### Fixed
+
+- **Improved agent disconnect detection** 🔌
+  - Added multiple socket event listeners: `close`, `error`, `timeout`
+  - Added `disconnected` flag to prevent duplicate handling
+  - Now listens to both response and socket events for reliable detection
+  - Error messages now include disconnect source for debugging
+
+### Technical
+
+- Added `handleDisconnect(source)` function with single-fire protection
+- Added `socket.on('close')`, `socket.on('error')`, `socket.on('timeout')` handlers
+- History now records which event triggered the disconnect
+
+## [1.0.17] - 2026-01-24
+
+### Fixed
+
+- **Timer synchronization completely rewritten** ⏱️
+  - Added local countdown timer in webview that calculates remaining time directly from `serverEndTime`
+  - Timer updates every 500ms for accuracy (twice per second)
+  - UI now shows exactly when server will timeout (no more 2-second drift)
+  - Extension-side timer still runs as backup, webview uses its own calculation
+  - Initial countdown value is now calculated, not taken from config
+
+### Technical
+
+- Added `serverEndTime` to `ExtensionToWebviewMessage`
+- Added `localCountdownInterval` in webview JS
+- Added `startLocalCountdown()` and `stopLocalCountdown()` functions
+- Webview calculates: `remaining = Math.ceil((serverEndTime - Date.now()) / 1000)`
+- `sendRequest()` now calculates and sends initial countdown from serverEndTime
+
+## [1.0.16] - 2026-01-24
+
+### Added
+
+- **Options/buttons display in history** 📋
+  - Expanded history entries now show all available options/buttons
+  - Selected option is highlighted with a checkmark
+  - For confirm dialogs, shows "✓ Yes" / "✗ No" buttons
+  - Response preview shows the selected option label, not raw value
+
+### Fixed
+
+- **Timer synchronization between UI and server** ⏱️
+  - Server now sends absolute `serverEndTime` timestamp
+  - UI calculates remaining time from server's end timestamp
+  - Eliminates drift caused by network latency and processing delays
+  - Timer now accurately reflects when server will actually timeout
+
+### Technical
+
+- Added `serverEndTime` field to `BaseToolRequest` type
+- Server calculates `serverEndTime = Date.now() + timeout` at request creation
+- UI countdown uses `serverEndTime - Date.now()` for accurate sync
+- Added `renderOptions()` and `formatResponse()` helper methods in history view
+- Added CSS styles for `.options-section`, `.options-list`, `.option-btn`, `.option-btn.selected`
+
+## [1.0.15] - 2026-01-24
+
+### Fixed
+
+- **Critical: Agent connection no longer breaks immediately** 🐛
+  - **Root cause identified**: Was listening to `req.on('close')` (request stream) which fires when client finishes _sending_ the request, not when client _disconnects_
+  - **Solution**: Now using `res.on('close')` (response stream) with `writableFinished` check
+  - This correctly detects when client disconnects BEFORE we send our response
+  - Agent can now send multiple requests without false "agent disconnected" errors
+
+### Technical
+
+- Passed `httpRes` (ServerResponse) through `processJsonRpc` → `handleToolCall` chain
+- Changed close event listener from `httpReq.on('close')` to `httpRes.on('close')`
+- Added `httpRes.writableFinished` check to distinguish normal completion from premature disconnect
+- Removed unnecessary `resolved` flag wrapper
+
 ## [1.0.14] - 2026-01-24
 
 ### Added
@@ -19,10 +200,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Real-time updates when history panel is open
   - Clear history button
 
+- **Expand/Collapse messages in history** 📖
+  - Each history entry has an "Expand" button
+  - Expand to see full message text and full response
+  - Collapse back to preview mode
+  - Animated arrow indicator
+
 - **Header action buttons** 🎛️
   - Added "📋 Instructions" button in panel header
   - Added "📜 History" button in panel header
   - Buttons styled consistently with VS Code theme
+
+### Fixed
+
+- **Critical bug: Agent connection no longer breaks immediately** 🐛
+  - Fixed HTTP close event handler that was incorrectly firing on normal response completion
+  - Added `resolved` flag to prevent false "agent disconnected" events
+  - Agent can now send multiple requests without connection issues
 
 ### Changed
 
@@ -36,6 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `HistoryEntry` and `HistoryStatus` types
 - MCPServer now records all request events to history
 - WebView can trigger commands via messages
+- Fixed request lifecycle management with proper resolved state tracking
 
 ## [1.0.13] - 2026-01-24
 

@@ -5,7 +5,12 @@
 
 import * as vscode from "vscode";
 import * as crypto from "crypto";
-import { HistoryEntry, HistoryStatus, ToolRequest, ButtonsToolRequest } from "./types";
+import {
+  HistoryEntry,
+  HistoryStatus,
+  ToolRequest,
+  ButtonsToolRequest,
+} from "./types";
 
 const MAX_HISTORY_ENTRIES = 100;
 const HISTORY_KEY_PREFIX = "hitl-history:";

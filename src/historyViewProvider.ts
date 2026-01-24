@@ -136,10 +136,7 @@ export class HistoryViewProvider {
   /**
    * Calculate duration between request and response
    */
-  private formatDuration(
-    requestTime: number,
-    responseTime?: number,
-  ): string {
+  private formatDuration(requestTime: number, responseTime?: number): string {
     if (!responseTime) {
       return "-";
     }
@@ -175,38 +172,120 @@ export class HistoryViewProvider {
   }
 
   /**
+   * Render options/buttons for an entry (for buttons tool)
+   */
+  private renderOptions(entry: HistoryEntry): string {
+    if (!entry.options || entry.options.length === 0) {
+      // For confirm tool, show Yes/No
+      if (entry.toolName === "ask_user_confirm") {
+        const isYes = entry.response === true || entry.response === "true";
+        const isNo = entry.response === false || entry.response === "false";
+        return `
+          <div class="options-section">
+            <div class="options-label">Options:</div>
+            <div class="options-list">
+              <span class="option-btn ${isYes ? "selected" : ""}">✓ Yes</span>
+              <span class="option-btn ${isNo ? "selected" : ""}">✗ No</span>
+            </div>
+          </div>
+        `;
+      }
+      return "";
+    }
+
+    // For buttons tool, show all options
+    const optionsHtml = entry.options
+      .map((opt) => {
+        const isSelected = entry.response === opt.value;
+        return `<span class="option-btn ${isSelected ? "selected" : ""}">${this.escapeHtml(opt.label)}</span>`;
+      })
+      .join("");
+
+    return `
+      <div class="options-section">
+        <div class="options-label">Options:</div>
+        <div class="options-list">${optionsHtml}</div>
+      </div>
+    `;
+  }
+
+  /**
+   * Format response for display (show label for button selections)
+   */
+  private formatResponse(entry: HistoryEntry): string {
+    // For confirm tool
+    if (entry.toolName === "ask_user_confirm") {
+      if (entry.response === true || entry.response === "true") {
+        return "✓ Yes";
+      }
+      if (entry.response === false || entry.response === "false") {
+        return "✗ No";
+      }
+    }
+
+    // For buttons tool - find the label that matches the value
+    if (entry.options && entry.response !== undefined) {
+      const selectedOption = entry.options.find(
+        (opt) => opt.value === entry.response,
+      );
+      if (selectedOption) {
+        return `${selectedOption.label}`;
+      }
+    }
+
+    // Default: show raw response
+    return this.truncate(String(entry.response), 50);
+  }
+
+  /**
    * Generate HTML for history panel
    */
   private getHtml(history: HistoryEntry[]): string {
     const nonce = getNonce();
 
-    const entriesHtml = history.length === 0
-      ? `<div class="empty-state">
+    const entriesHtml =
+      history.length === 0
+        ? `<div class="empty-state">
            <div class="icon">📋</div>
            <h3>No History Yet</h3>
            <p>Request history will appear here as agents<br>interact with the extension.</p>
          </div>`
-      : history
-          .map(
-            (entry) => `
-        <div class="history-entry ${this.getStatusClass(entry.status)}">
+        : history
+            .map((entry, index) => {
+              return `
+        <div class="history-entry ${this.getStatusClass(entry.status)}" data-entry-id="${index}">
           <div class="entry-header">
             <span class="status-icon">${this.getStatusIcon(entry.status)}</span>
             <span class="tool-name">${entry.toolName}</span>
             <span class="entry-time">${this.formatTime(entry.requestTime)}</span>
+            <button class="expand-btn" data-entry-id="${index}" title="Expand/Collapse"><span class="arrow">▼</span> <span class="expand-text">Expand</span></button>
           </div>
           <div class="entry-title">${this.escapeHtml(entry.title)}</div>
-          <div class="entry-message">${this.escapeHtml(this.truncate(entry.message, 150))}</div>
+          <div class="entry-message-preview">${this.escapeHtml(this.truncate(entry.message, 150))}</div>
+          <div class="entry-message-full">
+            <pre>${this.escapeHtml(entry.message)}</pre>
+            ${this.renderOptions(entry)}
+          </div>
           <div class="entry-footer">
             <span class="status-badge ${this.getStatusClass(entry.status)}">${entry.status.toUpperCase()}</span>
             <span class="duration">Duration: ${this.formatDuration(entry.requestTime, entry.responseTime)}</span>
-            ${entry.response !== undefined ? `<span class="response">Response: ${this.escapeHtml(this.truncate(String(entry.response), 50))}</span>` : ""}
-            ${entry.error ? `<span class="error">Error: ${this.escapeHtml(entry.error)}</span>` : ""}
           </div>
+          ${
+            entry.response !== undefined
+              ? `
+          <div class="entry-response">
+            <strong>Response:</strong>
+            <span class="response-preview">${this.escapeHtml(this.formatResponse(entry))}</span>
+            <div class="response-full"><h4>Full Response:</h4><pre>${this.escapeHtml(String(entry.response))}</pre></div>
+          </div>
+          `
+              : ""
+          }
+          ${entry.error ? `<div class="entry-error"><strong>Error:</strong> ${this.escapeHtml(entry.error)}</div>` : ""}
         </div>
-      `,
-          )
-          .join("");
+      `;
+            })
+            .join("");
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -388,8 +467,136 @@ export class HistoryViewProvider {
             color: var(--vscode-charts-green);
         }
 
+        .options-section {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--vscode-widget-border);
+        }
+
+        .options-label {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .options-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .option-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--vscode-button-secondaryBackground);
+            border-radius: 4px;
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            color: var(--vscode-foreground);
+            font-size: 12px;
+            cursor: default;
+            opacity: 0.7;
+        }
+
+        .option-btn.selected {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-background);
+            opacity: 1;
+            font-weight: 600;
+        }
+
+        .option-btn.selected::before {
+            content: "✓ ";
+        }
+
         .error {
             color: var(--vscode-errorForeground);
+        }
+
+        .expand-btn {
+            background: transparent;
+            border: 1px solid var(--vscode-button-secondaryBackground);
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: background-color 0.2s;
+        }
+
+        .expand-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .expand-btn .arrow {
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .expand-btn.expanded .arrow {
+            transform: rotate(180deg);
+        }
+
+        .entry-message-preview {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 100%;
+        }
+
+        .entry-message-full {
+            display: none;
+            margin-bottom: 8px;
+        }
+
+        .entry-message-full.visible {
+            display: block;
+        }
+
+        .entry-message-full pre,
+        .response-full pre {
+            background-color: var(--vscode-textBlockQuote-background);
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 4px;
+            padding: 8px;
+            margin: 4px 0;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .response-preview {
+            font-size: 12px;
+            color: var(--vscode-charts-green);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 200px;
+            display: inline-block;
+        }
+
+        .response-full {
+            display: none;
+            margin-top: 8px;
+        }
+
+        .response-full.visible {
+            display: block;
+        }
+
+        .response-full h4 {
+            margin: 0 0 4px 0;
+            font-size: 12px;
+            color: var(--vscode-charts-green);
         }
 
         .empty-state {
@@ -452,6 +659,38 @@ export class HistoryViewProvider {
 
         document.getElementById('refreshBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
+        });
+
+        // Handle expand/collapse buttons
+        document.querySelectorAll('.expand-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const entryId = btn.getAttribute('data-entry-id');
+                const entry = document.querySelector('.history-entry[data-entry-id="' + entryId + '"]');
+                if (!entry) return;
+
+                const isExpanded = btn.classList.toggle('expanded');
+                const arrow = btn.querySelector('.arrow');
+                
+                // Toggle message preview/full
+                const msgPreview = entry.querySelector('.entry-message-preview');
+                const msgFull = entry.querySelector('.entry-message-full');
+                const respPreview = entry.querySelector('.response-preview');
+                const respFull = entry.querySelector('.response-full');
+
+                if (isExpanded) {
+                    btn.querySelector('.expand-text').textContent = 'Collapse';
+                    if (msgPreview) msgPreview.style.display = 'none';
+                    if (msgFull) msgFull.classList.add('visible');
+                    if (respPreview) respPreview.style.display = 'none';
+                    if (respFull) respFull.classList.add('visible');
+                } else {
+                    btn.querySelector('.expand-text').textContent = 'Expand';
+                    if (msgPreview) msgPreview.style.display = 'block';
+                    if (msgFull) msgFull.classList.remove('visible');
+                    if (respPreview) respPreview.style.display = 'inline-block';
+                    if (respFull) respFull.classList.remove('visible');
+                }
+            });
         });
     </script>
 </body>
