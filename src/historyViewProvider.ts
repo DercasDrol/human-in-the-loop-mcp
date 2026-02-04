@@ -6,6 +6,7 @@
 import * as vscode from "vscode";
 import { HistoryEntry, HistoryStatus } from "./types";
 import { HistoryManager } from "./historyManager";
+import { renderMarkdown } from "./markdownRenderer";
 
 /**
  * HistoryViewProvider class for displaying history in a WebviewPanel
@@ -252,6 +253,8 @@ export class HistoryViewProvider {
          </div>`
         : history
             .map((entry, index) => {
+              // Pre-render markdown for the expanded message view
+              const renderedMessage = renderMarkdown(entry.message);
               return `
         <div class="history-entry ${this.getStatusClass(entry.status)}" data-entry-id="${index}">
           <div class="entry-header">
@@ -262,8 +265,8 @@ export class HistoryViewProvider {
           </div>
           <div class="entry-title">${this.escapeHtml(entry.title)}</div>
           <div class="entry-message-preview">${this.escapeHtml(this.truncate(entry.message, 150))}</div>
-          <div class="entry-message-full">
-            <pre>${this.escapeHtml(entry.message)}</pre>
+          <div class="entry-message-full markdown-content">
+            ${renderedMessage}
             ${this.renderOptions(entry)}
           </div>
           <div class="entry-footer">
@@ -624,6 +627,133 @@ export class HistoryViewProvider {
             margin: 0;
             font-size: 13px;
             line-height: 1.5;
+        }
+
+        /* Markdown styles for expanded messages */
+        .markdown-content {
+            line-height: 1.5;
+        }
+
+        .markdown-content > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, 
+        .markdown-content h4, .markdown-content h5, .markdown-content h6 {
+            margin: 12px 0 8px 0;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .markdown-content h1 { font-size: 1.4em; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 4px; }
+        .markdown-content h2 { font-size: 1.25em; }
+        .markdown-content h3 { font-size: 1.1em; }
+        .markdown-content h4 { font-size: 1em; }
+        .markdown-content h5, .markdown-content h6 { font-size: 0.95em; }
+
+        .markdown-content p {
+            margin: 8px 0;
+        }
+
+        .markdown-content pre {
+            background-color: var(--vscode-textCodeBlock-background);
+            padding: 12px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+
+        .markdown-content pre code {
+            background: none;
+            padding: 0;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+            white-space: pre;
+        }
+
+        .markdown-content code {
+            background-color: var(--vscode-textCodeBlock-background);
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 0.9em;
+        }
+
+        .markdown-content blockquote {
+            border-left: 3px solid var(--vscode-textLink-foreground);
+            margin: 8px 0;
+            padding: 4px 12px;
+            background-color: var(--vscode-textBlockQuote-background);
+            font-style: italic;
+        }
+
+        .markdown-content ul, .markdown-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        .markdown-content li {
+            margin: 4px 0;
+        }
+
+        .markdown-content hr {
+            border: none;
+            border-top: 1px solid var(--vscode-widget-border);
+            margin: 12px 0;
+        }
+
+        .markdown-content a {
+            color: var(--vscode-textLink-foreground);
+            text-decoration: none;
+        }
+
+        .markdown-content a:hover {
+            text-decoration: underline;
+        }
+
+        .markdown-content strong {
+            font-weight: 600;
+        }
+
+        .markdown-content em {
+            font-style: italic;
+        }
+
+        .markdown-content del {
+            text-decoration: line-through;
+            opacity: 0.7;
+        }
+
+        .markdown-content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            margin: 8px 0;
+        }
+
+        /* GFM Tables */
+        .markdown-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+        }
+
+        .markdown-content th, .markdown-content td {
+            border: 1px solid var(--vscode-widget-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .markdown-content th {
+            background-color: var(--vscode-editor-selectionBackground);
+            font-weight: 600;
+        }
+
+        .markdown-content tr:nth-child(even) {
+            background-color: var(--vscode-list-hoverBackground);
         }
     </style>
 </head>

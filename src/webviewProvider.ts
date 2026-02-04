@@ -998,7 +998,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             <div class="input-container" id="textInputContainer" style="display: none;">
                 <textarea id="textInput" placeholder="Enter your response..." aria-label="Your response"></textarea>
                 <div class="submit-row">
-                    <span class="submit-hint">Shift+Enter to send</span>
+                    <span class="submit-hint">Enter to send • Shift+Enter for new line</span>
                     <button id="submitTextBtn" class="primary" aria-label="Submit response">Submit</button>
                 </div>
             </div>
@@ -1012,7 +1012,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 <div class="custom-input-container" id="confirmCustomInput" style="display: none;">
                     <textarea id="confirmCustomText" placeholder="Type custom response..." aria-label="Custom response text"></textarea>
                     <div class="submit-row">
-                        <span class="submit-hint">Shift+Enter to send</span>
+                        <span class="submit-hint">Enter to send • Shift+Enter for new line</span>
                         <button id="confirmCustomSend" class="primary" aria-label="Send custom response">Send</button>
                     </div>
                 </div>
@@ -1027,7 +1027,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             <div class="custom-input-container" id="buttonsCustomInput" style="display: none;">
                 <textarea id="buttonsCustomText" placeholder="Type custom response..." aria-label="Custom response text"></textarea>
                 <div class="submit-row">
-                    <span class="submit-hint">Shift+Enter to send</span>
+                    <span class="submit-hint">Enter to send • Shift+Enter for new line</span>
                     <button id="buttonsCustomSend" class="primary" aria-label="Send custom response">Send</button>
                 </div>
             </div>
@@ -1122,6 +1122,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             // Resume audio on any user click
             document.addEventListener('click', initAudioContext, { once: true });
             document.addEventListener('keydown', initAudioContext, { once: true });
+
+            // Auto-resize textarea based on content
+            function autoResizeTextarea(textarea) {
+                textarea.style.height = 'auto';
+                textarea.style.height = Math.max(80, textarea.scrollHeight) + 'px';
+            }
 
             // Sound generation using Web Audio API
             function playSound(soundType, volume) {
@@ -1570,10 +1576,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             textInput.addEventListener('keydown', (e) => {
-                // Shift+Enter = send response
-                // Enter alone = new line (default textarea behavior)
+                // Enter alone = send response
+                // Shift+Enter = new line (default textarea behavior)
                 // Ctrl+Enter = new line (default textarea behavior)
-                if (e.key === 'Enter' && e.shiftKey) {
+                if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
                     e.preventDefault();
                     const value = textInput.value.trim();
                     if (value) {
@@ -1603,9 +1609,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             confirmCustomText.addEventListener('keydown', (e) => {
-                // Shift+Enter = send response
-                // Enter alone = new line (default textarea behavior)
-                if (e.key === 'Enter' && e.shiftKey) {
+                // Enter alone = send response
+                // Shift+Enter = new line (default textarea behavior)
+                if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
                     e.preventDefault();
                     const value = confirmCustomText.value.trim();
                     if (value) {
@@ -1632,9 +1638,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             buttonsCustomText.addEventListener('keydown', (e) => {
-                // Shift+Enter = send response
-                // Enter alone = new line (default textarea behavior)
-                if (e.key === 'Enter' && e.shiftKey) {
+                // Enter alone = send response
+                // Shift+Enter = new line (default textarea behavior)
+                if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
                     e.preventDefault();
                     const value = buttonsCustomText.value.trim();
                     if (value) {
@@ -1645,6 +1651,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
             // Save form values on input to preserve state when switching tabs
             textInput.addEventListener('input', () => {
+                autoResizeTextarea(textInput);
                 if (currentRequestId) {
                     if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
                     savedFormValues[currentRequestId].textInput = textInput.value;
@@ -1652,6 +1659,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             confirmCustomText.addEventListener('input', () => {
+                autoResizeTextarea(confirmCustomText);
                 if (currentRequestId) {
                     if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
                     savedFormValues[currentRequestId].confirmCustomText = confirmCustomText.value;
@@ -1659,6 +1667,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             });
 
             buttonsCustomText.addEventListener('input', () => {
+                autoResizeTextarea(buttonsCustomText);
                 if (currentRequestId) {
                     if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
                     savedFormValues[currentRequestId].buttonsCustomText = buttonsCustomText.value;

@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.35] - 2025-02-04
+
+### Changed
+
+- **Keyboard shortcuts for text input inverted for better UX** ⌨️
+  - **Enter** now sends the response (more intuitive)
+  - **Shift+Enter** now creates a new line (for multiline input)
+  - Updated hint text to "Enter to send • Shift+Enter for new line"
+  - Applied consistently to all text input fields:
+    - Main text input (`ask_user_text`)
+    - Custom text input for confirm (`ask_user_confirm`)
+    - Custom text input for buttons (`ask_user_buttons`)
+
+### Added
+
+- **Auto-expand textareas** 📐
+  - All text input fields now automatically expand as you type
+  - Minimum height of 80px, grows with content
+  - Works for all three textarea types
+
+- **Markdown rendering in history view** 📝
+  - Expanded messages in history now render with full Markdown formatting
+  - Headers, code blocks, lists, tables, links, and more are now properly styled
+  - Same Markdown styling as the main panel for consistency
+
+### UI
+
+- Added `autoResizeTextarea()` function for dynamic textarea height adjustment
+- Added full markdown CSS styles to history view panel
+- Imported `renderMarkdown` in history view for consistent rendering
+
 ## [1.0.34] - 2025-01-25
 
 ### Changed
