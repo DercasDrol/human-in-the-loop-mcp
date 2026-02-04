@@ -2,7 +2,7 @@
   "name": "human-in-the-loop-mcp",
   "displayName": "Human in the Loop MCP",
   "description": "MCP server extension that enables human-in-the-loop interactions between AI agents and users, with countdown timer, sound notifications, and customizable settings",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "publisher": "DercasDrol",
   "license": "MIT",
   "icon": "resources/icon.png",

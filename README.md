@@ -77,11 +77,10 @@ Add the MCP server to your project's `.vscode/mcp.json`:
 
 | Shortcut      | Action                        |
 | ------------- | ----------------------------- |
-| `Enter`       | Insert new line in text input |
-| `Shift+Enter` | Send response                 |
-| `Ctrl+Enter`  | Insert new line in text input |
+| `Enter`       | Send response                 |
+| `Shift+Enter` | Insert new line in text input |
 
-> **Tip**: Use `Enter` to write multi-line responses, then `Shift+Enter` to send.
+> **Tip**: Use `Shift+Enter` to write multi-line responses, then `Enter` to send.
 
 ## Available MCP Tools
 
