@@ -13,6 +13,7 @@ import {
   ConfirmToolRequest,
   ButtonsToolRequest,
   PendingRequest,
+  Attachment,
 } from "./types";
 import { HistoryManager } from "./historyManager";
 import { getLogger } from "./logger";
@@ -611,7 +612,11 @@ export class MCPServer {
   /**
    * Handle user response from WebView
    */
-  public handleUserResponse(requestId: string, value: string | boolean): void {
+  public handleUserResponse(
+    requestId: string,
+    value: string | boolean,
+    attachments?: Attachment[],
+  ): void {
     const pending = this.pendingRequests.get(requestId);
     if (pending) {
       if (pending.timeoutId) {
@@ -622,15 +627,16 @@ export class MCPServer {
       }
       this.deletePendingRequest(requestId);
 
-      // Record response in history
+      // Record response in history (with attachments if any)
       if (this.historyManager) {
-        this.historyManager.updateEntry(requestId, "answered", value);
+        this.historyManager.updateEntry(requestId, "answered", value, undefined, attachments);
       }
 
       pending.resolve({
         id: requestId,
         success: true,
         value,
+        attachments,
       });
     }
   }
@@ -1360,19 +1366,40 @@ BEST PRACTICES:
       };
     }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            typeof response.value === "boolean"
-              ? response.value
-                ? "Yes"
-                : "No"
-              : String(response.value),
-        },
-      ],
-    };
+    // Build content array with text response and any attachments
+    const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [
+      {
+        type: "text",
+        text:
+          typeof response.value === "boolean"
+            ? response.value
+              ? "Yes"
+              : "No"
+            : String(response.value),
+      },
+    ];
+
+    // Add file attachments to content
+    if (response.attachments && response.attachments.length > 0) {
+      for (const attachment of response.attachments) {
+        if (attachment.isImage) {
+          // Images: use MCP image content type with base64 data
+          content.push({
+            type: "image",
+            data: attachment.data,
+            mimeType: attachment.mimeType,
+          });
+        } else {
+          // Text files: include as text content with filename header
+          content.push({
+            type: "text",
+            text: `--- ${attachment.name} ---\n${attachment.data}`,
+          });
+        }
+      }
+    }
+
+    return { content };
   }
 
   /**

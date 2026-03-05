@@ -19,6 +19,22 @@ export interface ButtonOption {
 }
 
 /**
+ * File attachment for tool responses
+ */
+export interface Attachment {
+  /** File name (e.g. "screenshot.png") */
+  name: string;
+  /** MIME type (e.g. "image/png", "text/plain") */
+  mimeType: string;
+  /** File data: base64 for images/binary, raw text for text files */
+  data: string;
+  /** Whether this is an image file */
+  isImage: boolean;
+  /** File size in bytes */
+  size: number;
+}
+
+/**
  * Base request from MCP tool
  */
 export interface BaseToolRequest {
@@ -71,6 +87,8 @@ export interface ToolResponse {
   value?: string | boolean;
   error?: string;
   timedOut?: boolean;
+  /** File attachments included with the response */
+  attachments?: Attachment[];
 }
 
 /**
@@ -85,7 +103,8 @@ export interface ExtensionToWebviewMessage {
     | "settings"
     | "playSound"
     | "pauseState"
-    | "requestCancelled";
+    | "requestCancelled"
+    | "filesAttached";
   request?: ToolRequest;
   messageHtml?: string; // Pre-rendered markdown HTML
   countdown?: number;
@@ -104,6 +123,10 @@ export interface ExtensionToWebviewMessage {
     soundVolume?: number;
     soundType?: string;
   };
+  // For filesAttached
+  attachments?: Attachment[];
+  /** Error message when file attachment fails */
+  attachError?: string;
 }
 
 /**
@@ -115,9 +138,24 @@ export interface WebviewToExtensionMessage {
     | "ready"
     | "togglePause"
     | "showInstructions"
-    | "showHistory";
+    | "showHistory"
+    | "attachFiles"
+    | "removeAttachment"
+    | "addDroppedFiles";
   requestId?: string;
   value?: string | boolean;
+  /** File attachments included with the response */
+  attachments?: Attachment[];
+  /** Index of attachment to remove (for removeAttachment) */
+  attachmentIndex?: number;
+  /** Dropped/pasted file data from webview */
+  droppedFiles?: Array<{
+    name: string;
+    mimeType: string;
+    data: string; // base64 for binary/images, raw text for text files
+    isImage: boolean;
+    size: number;
+  }>;
 }
 
 /**
@@ -142,6 +180,22 @@ export interface PendingRequest {
 export type HistoryStatus = "pending" | "answered" | "timeout" | "cancelled";
 
 /**
+ * Reference to an attachment file stored on disk
+ */
+export interface AttachmentRef {
+  /** File name (e.g. "screenshot.png") */
+  name: string;
+  /** MIME type */
+  mimeType: string;
+  /** Whether this is an image file */
+  isImage: boolean;
+  /** File size in bytes */
+  size: number;
+  /** Relative path within attachments storage dir: {entryId}/{filename} */
+  relativePath: string;
+}
+
+/**
  * History entry for request/response tracking
  */
 export interface HistoryEntry {
@@ -156,4 +210,6 @@ export interface HistoryEntry {
   status: HistoryStatus;
   response?: string | boolean;
   error?: string;
+  /** References to attachment files stored on disk */
+  attachmentRefs?: AttachmentRef[];
 }

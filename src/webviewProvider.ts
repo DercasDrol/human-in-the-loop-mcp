@@ -4,10 +4,12 @@
  */
 
 import * as vscode from "vscode";
+import * as path from "path";
 import {
   ToolRequest,
   ExtensionToWebviewMessage,
   WebviewToExtensionMessage,
+  Attachment,
 } from "./types";
 import { MCPServer } from "./mcpServer";
 import { renderMarkdown } from "./markdownRenderer";
@@ -15,6 +17,31 @@ import { getLogger } from "./logger";
 
 // Get logger instance
 const logger = getLogger();
+
+/** Image file extensions */
+const IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "tif",
+]);
+
+/** Text file extensions (source code, logs, configs, etc.) */
+const TEXT_EXTENSIONS = new Set([
+  "txt", "log", "md", "json", "xml", "yaml", "yml", "csv", "html", "htm",
+  "css", "js", "jsx", "ts", "tsx", "py", "java", "c", "cpp", "h", "hpp",
+  "cs", "rs", "go", "rb", "php", "sh", "bat", "ps1", "sql", "ini", "cfg",
+  "conf", "env", "toml", "dockerfile", "makefile", "gitignore", "editorconfig",
+  "properties", "gradle", "swift", "kt", "kts", "scala", "r", "lua", "pl",
+  "pm", "ex", "exs", "erl", "hs", "ml", "clj", "cljs", "vim", "el",
+  "lisp", "scm", "asm", "s", "diff", "patch",
+]);
+
+/** Max file size for images (10MB) */
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+
+/** Max file size for text files (1MB) */
+const MAX_TEXT_SIZE = 1 * 1024 * 1024;
+
+/** Max number of attachments */
+const MAX_ATTACHMENTS = 10;
 
 export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "humanInTheLoop.mainView";
@@ -26,6 +53,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   private currentCountdown: number = 0;
   private cancellationRetryTimers: Map<string, NodeJS.Timeout[]> = new Map();
   private disposables: vscode.Disposable[] = [];
+  private pendingAttachments: Attachment[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -180,8 +208,18 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         if (message.requestId && message.value !== undefined) {
           logger.request(message.requestId, "User response", {
             value: message.value,
+            attachmentCount: this.pendingAttachments.length,
           });
-          this.mcpServer.handleUserResponse(message.requestId, message.value);
+          // Use stored pendingAttachments (avoids round-tripping large data through webview)
+          const attachments = this.pendingAttachments.length > 0
+            ? [...this.pendingAttachments]
+            : undefined;
+          this.pendingAttachments = [];
+          this.mcpServer.handleUserResponse(
+            message.requestId,
+            message.value,
+            attachments,
+          );
           this.clearRequest();
         }
         break;
@@ -197,6 +235,23 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
       case "showHistory":
         vscode.commands.executeCommand("humanInTheLoop.showHistory");
+        break;
+
+      case "attachFiles":
+        this.handleAttachFiles();
+        break;
+
+      case "removeAttachment":
+        if (message.attachmentIndex !== undefined) {
+          this.pendingAttachments.splice(message.attachmentIndex, 1);
+          this.sendAttachmentsUpdate();
+        }
+        break;
+
+      case "addDroppedFiles":
+        if (message.droppedFiles && message.droppedFiles.length > 0) {
+          this.handleDroppedFiles(message.droppedFiles);
+        }
         break;
     }
   }
@@ -225,6 +280,248 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Handle file attachment request from webview
+   * Opens VS Code native file picker, reads files, sends data back to webview
+   */
+  private async handleAttachFiles(): Promise<void> {
+    const remainingSlots = MAX_ATTACHMENTS - this.pendingAttachments.length;
+    if (remainingSlots <= 0) {
+      this._view?.webview.postMessage({
+        type: "filesAttached",
+        attachError: `Maximum ${MAX_ATTACHMENTS} attachments allowed`,
+      } as ExtensionToWebviewMessage);
+      return;
+    }
+
+    const fileUris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFolders: false,
+      openLabel: "Attach Files",
+      filters: {
+        "Images": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "tif"],
+        "Text / Source": [
+          "txt", "log", "md", "json", "xml", "yaml", "yml", "csv",
+          "html", "htm", "css", "js", "jsx", "ts", "tsx", "py",
+          "java", "c", "cpp", "h", "hpp", "cs", "rs", "go", "rb",
+          "php", "sh", "bat", "ps1", "sql", "ini", "cfg", "conf",
+          "env", "toml",
+        ],
+        "All Files": ["*"],
+      },
+    });
+
+    if (!fileUris || fileUris.length === 0) {
+      return;
+    }
+
+    const errors: string[] = [];
+    const newAttachments: Attachment[] = [];
+
+    for (const uri of fileUris) {
+      if (newAttachments.length + this.pendingAttachments.length >= MAX_ATTACHMENTS) {
+        errors.push(`Reached maximum of ${MAX_ATTACHMENTS} attachments`);
+        break;
+      }
+
+      try {
+        const fileStat = await vscode.workspace.fs.stat(uri);
+        const ext = path.extname(uri.fsPath).toLowerCase().replace(".", "");
+        const fileName = path.basename(uri.fsPath);
+        const isImage = IMAGE_EXTENSIONS.has(ext);
+        const isText = TEXT_EXTENSIONS.has(ext);
+
+        // Size limits
+        if (isImage && fileStat.size > MAX_IMAGE_SIZE) {
+          errors.push(`${fileName}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`);
+          continue;
+        }
+        if (!isImage && fileStat.size > MAX_TEXT_SIZE) {
+          errors.push(`${fileName}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`);
+          continue;
+        }
+
+        const fileData = await vscode.workspace.fs.readFile(uri);
+
+        if (isImage) {
+          // Convert to base64 for images
+          const base64 = Buffer.from(fileData).toString("base64");
+          const mimeType = this.getMimeType(ext);
+          newAttachments.push({
+            name: fileName,
+            mimeType,
+            data: base64,
+            isImage: true,
+            size: fileStat.size,
+          });
+        } else if (isText || fileStat.size < MAX_TEXT_SIZE) {
+          // Read as text for text files or small unknown files
+          const textContent = Buffer.from(fileData).toString("utf-8");
+          const mimeType = this.getTextMimeType(ext);
+          newAttachments.push({
+            name: fileName,
+            mimeType,
+            data: textContent,
+            isImage: false,
+            size: fileStat.size,
+          });
+        } else {
+          // Unknown binary file - encode as base64 resource
+          const base64 = Buffer.from(fileData).toString("base64");
+          newAttachments.push({
+            name: fileName,
+            mimeType: "application/octet-stream",
+            data: base64,
+            isImage: false,
+            size: fileStat.size,
+          });
+        }
+
+        logger.ui(`Attached file: ${fileName} (${isImage ? "image" : "text"}, ${fileStat.size} bytes)`);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        errors.push(`${path.basename(uri.fsPath)}: ${msg}`);
+        logger.error(`Failed to read file ${uri.fsPath}`, error);
+      }
+    }
+
+    this.pendingAttachments.push(...newAttachments);
+    this.sendAttachmentsUpdate(errors.length > 0 ? errors.join("; ") : undefined);
+  }
+
+  /**
+   * Handle files dropped or pasted in the webview
+   * Receives file data already read by the webview (FileReader API)
+   */
+  private handleDroppedFiles(
+    droppedFiles: Array<{
+      name: string;
+      mimeType: string;
+      data: string;
+      isImage: boolean;
+      size: number;
+    }>,
+  ): void {
+    const errors: string[] = [];
+    const newAttachments: Attachment[] = [];
+
+    for (const file of droppedFiles) {
+      if (newAttachments.length + this.pendingAttachments.length >= MAX_ATTACHMENTS) {
+        errors.push(`Reached maximum of ${MAX_ATTACHMENTS} attachments`);
+        break;
+      }
+
+      // Size limits
+      if (file.isImage && file.size > MAX_IMAGE_SIZE) {
+        errors.push(`${file.name}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`);
+        continue;
+      }
+      if (!file.isImage && file.size > MAX_TEXT_SIZE) {
+        errors.push(`${file.name}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`);
+        continue;
+      }
+
+      newAttachments.push({
+        name: file.name,
+        mimeType: file.mimeType,
+        data: file.data,
+        isImage: file.isImage,
+        size: file.size,
+      });
+
+      logger.ui(`Dropped/pasted file: ${file.name} (${file.isImage ? "image" : "text"}, ${file.size} bytes)`);
+    }
+
+    this.pendingAttachments.push(...newAttachments);
+    this.sendAttachmentsUpdate(errors.length > 0 ? errors.join("; ") : undefined);
+  }
+
+  /**
+   * Send current attachments state to webview
+   * Only sends data needed for display (image base64 for thumbnails, no text file content)
+   */
+  private sendAttachmentsUpdate(error?: string): void {
+    if (this._view) {
+      // Send lightweight version for webview display
+      const displayAttachments = this.pendingAttachments.map((att) => ({
+        name: att.name,
+        mimeType: att.mimeType,
+        data: att.isImage ? att.data : "", // Only send data for images (thumbnails)
+        isImage: att.isImage,
+        size: att.size,
+      }));
+
+      this._view.webview.postMessage({
+        type: "filesAttached",
+        attachments: displayAttachments,
+        attachError: error,
+      } as ExtensionToWebviewMessage);
+    }
+  }
+
+  /**
+   * Get MIME type for image files
+   */
+  private getMimeType(ext: string): string {
+    const mimeMap: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      bmp: "image/bmp",
+      svg: "image/svg+xml",
+      ico: "image/x-icon",
+      tiff: "image/tiff",
+      tif: "image/tiff",
+    };
+    return mimeMap[ext] || "image/png";
+  }
+
+  /**
+   * Get MIME type for text files
+   */
+  private getTextMimeType(ext: string): string {
+    const mimeMap: Record<string, string> = {
+      txt: "text/plain",
+      log: "text/plain",
+      md: "text/markdown",
+      json: "application/json",
+      xml: "text/xml",
+      yaml: "text/yaml",
+      yml: "text/yaml",
+      csv: "text/csv",
+      html: "text/html",
+      htm: "text/html",
+      css: "text/css",
+      js: "text/javascript",
+      jsx: "text/javascript",
+      ts: "text/typescript",
+      tsx: "text/typescript",
+      py: "text/x-python",
+      java: "text/x-java",
+      c: "text/x-c",
+      cpp: "text/x-c++",
+      h: "text/x-c",
+      hpp: "text/x-c++",
+      cs: "text/x-csharp",
+      rs: "text/x-rust",
+      go: "text/x-go",
+      rb: "text/x-ruby",
+      php: "text/x-php",
+      sh: "text/x-shellscript",
+      bat: "text/plain",
+      ps1: "text/plain",
+      sql: "text/x-sql",
+      ini: "text/plain",
+      cfg: "text/plain",
+      conf: "text/plain",
+      env: "text/plain",
+      toml: "text/x-toml",
+    };
+    return mimeMap[ext] || "text/plain";
+  }
+
+  /**
    * Show a new request in the webview
    */
   public showRequest(request: ToolRequest): void {
@@ -233,6 +530,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       title: request.title,
     });
     this.currentRequest = request;
+    this.pendingAttachments = []; // Clear attachments for new request
 
     // Start countdown using server's end time for synchronization
     this.startCountdown(request.serverEndTime);
@@ -320,6 +618,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    */
   private clearRequest(): void {
     this.currentRequest = null;
+    this.pendingAttachments = [];
     this.stopCountdown();
 
     if (this._view) {
@@ -965,6 +1264,111 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             color: var(--vscode-foreground);
             line-height: 1.5;
         }
+
+        /* Attachment styles */
+        .attach-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .attach-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background-color 0.2s;
+            align-self: flex-start;
+        }
+
+        .attach-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .attachments-preview {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .attachment-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 4px;
+            font-size: 11px;
+            max-width: 200px;
+        }
+
+        .attachment-item img {
+            width: 32px;
+            height: 32px;
+            object-fit: cover;
+            border-radius: 3px;
+        }
+
+        .attachment-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+
+        .attachment-size {
+            color: var(--vscode-descriptionForeground);
+            font-size: 10px;
+            white-space: nowrap;
+        }
+
+        .attachment-remove {
+            background: transparent;
+            border: none;
+            color: var(--vscode-errorForeground);
+            cursor: pointer;
+            padding: 0 2px;
+            font-size: 14px;
+            line-height: 1;
+            opacity: 0.7;
+        }
+
+        .attachment-remove:hover {
+            opacity: 1;
+        }
+
+        .attach-error {
+            color: var(--vscode-errorForeground);
+            font-size: 11px;
+            padding: 4px 0;
+        }
+
+        /* Drag and drop visual feedback */
+        .request-container.drag-over {
+            outline: 2px dashed var(--vscode-focusBorder);
+            outline-offset: -2px;
+            background-color: var(--vscode-editor-selectionBackground);
+        }
+
+        .drop-hint {
+            display: none;
+            text-align: center;
+            padding: 12px;
+            color: var(--vscode-focusBorder);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .request-container.drag-over .drop-hint {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -1031,6 +1435,14 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                     <button id="buttonsCustomSend" class="primary" aria-label="Send custom response">Send</button>
                 </div>
             </div>
+
+            <div class="attach-section" id="attachSection">
+                <button id="attachBtn" class="attach-btn" title="Attach files or images" aria-label="Attach files or images">📎 Attach files</button>
+                <span class="attach-hint" style="font-size: 10px; color: var(--vscode-descriptionForeground);">or drag & drop / paste from clipboard</span>
+                <div class="attachments-preview" id="attachmentsPreview"></div>
+                <div class="attach-error" id="attachError" style="display: none;"></div>
+            </div>
+            <div class="drop-hint">📎 Drop files here to attach</div>
         </div>
 
         <div class="empty-state" id="emptyState" role="status" aria-live="polite">
@@ -1081,6 +1493,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const mcpConfig = document.getElementById('mcpConfig');
             const instructionsBtn = document.getElementById('instructionsBtn');
             const historyBtn = document.getElementById('historyBtn');
+            const attachBtn = document.getElementById('attachBtn');
+            const attachmentsPreview = document.getElementById('attachmentsPreview');
+            const attachError = document.getElementById('attachError');
+            const attachSection = document.getElementById('attachSection');
 
             let currentRequestId = null;
             let totalTimeout = 120;
@@ -1089,6 +1505,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             let isPaused = false; // Timer pause state
             let serverEndTime = 0; // Absolute timestamp when server timeout will occur
             let localCountdownInterval = null; // Local countdown timer
+            let currentAttachments = []; // Current file attachments
             
             // Form state preservation - stores input values by requestId
             let savedFormValues = {};
@@ -1342,6 +1759,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 serverEndTime = endTime || 0; // Store server's absolute end time
                 currentMessageText = request.message; // Store for copy function
 
+                // Clear attachments for new requests
+                if (!isSameRequest) {
+                    currentAttachments = [];
+                    renderAttachments();
+                }
+
                 requestTitle.textContent = request.title;
                 // Use pre-rendered HTML from extension (marked + DOMPurify)
                 requestMessage.innerHTML = messageHtml || request.message;
@@ -1456,6 +1879,8 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                     delete savedFormValues[currentRequestId];
                 }
                 currentRequestId = null;
+                currentAttachments = [];
+                renderAttachments();
                 requestContainer.classList.remove('visible');
                 emptyState.style.display = 'flex';
                 stickyTimer.style.display = 'none';
@@ -1503,11 +1928,14 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                     // Clear saved form values after successful send
                     delete savedFormValues[currentRequestId];
                     
+                    // Attachments are stored on extension side, no need to send them back
                     vscode.postMessage({
                         type: 'response',
                         requestId: currentRequestId,
                         value: value
                     });
+                    currentAttachments = [];
+                    renderAttachments();
                 }
             }
 
@@ -1697,6 +2125,221 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 }
             });
 
+            // --- Attachment handling ---
+
+            // Format file size for display
+            function formatFileSize(bytes) {
+                if (bytes < 1024) return bytes + ' B';
+                if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+
+            // Render attachments preview
+            function renderAttachments() {
+                attachmentsPreview.innerHTML = '';
+                attachError.style.display = 'none';
+                
+                currentAttachments.forEach((att, index) => {
+                    const item = document.createElement('div');
+                    item.className = 'attachment-item';
+                    
+                    if (att.isImage) {
+                        const img = document.createElement('img');
+                        img.src = 'data:' + att.mimeType + ';base64,' + att.data;
+                        img.alt = att.name;
+                        item.appendChild(img);
+                    } else {
+                        const icon = document.createElement('span');
+                        icon.textContent = '📄';
+                        item.appendChild(icon);
+                    }
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'attachment-name';
+                    nameSpan.textContent = att.name;
+                    nameSpan.title = att.name;
+                    item.appendChild(nameSpan);
+                    
+                    const sizeSpan = document.createElement('span');
+                    sizeSpan.className = 'attachment-size';
+                    sizeSpan.textContent = formatFileSize(att.size);
+                    item.appendChild(sizeSpan);
+                    
+                    const removeBtn = document.createElement('button');
+                    removeBtn.className = 'attachment-remove';
+                    removeBtn.textContent = '✕';
+                    removeBtn.title = 'Remove attachment';
+                    removeBtn.addEventListener('click', () => {
+                        vscode.postMessage({ type: 'removeAttachment', attachmentIndex: index });
+                        currentAttachments.splice(index, 1);
+                        renderAttachments();
+                    });
+                    item.appendChild(removeBtn);
+                    
+                    attachmentsPreview.appendChild(item);
+                });
+            }
+
+            // Attach files button
+            attachBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'attachFiles' });
+            });
+
+            // === Helper: known image/text extensions ===
+            const imageExts = new Set(['png','jpg','jpeg','gif','webp','bmp','svg','ico','tiff','tif']);
+            const textExts = new Set([
+                'txt','log','md','json','xml','yaml','yml','csv','html','htm',
+                'css','js','jsx','ts','tsx','py','java','c','cpp','h','hpp',
+                'cs','rs','go','rb','php','sh','bat','ps1','sql','ini','cfg',
+                'conf','env','toml',
+            ]);
+
+            function getFileExtension(name) {
+                const idx = name.lastIndexOf('.');
+                return idx > 0 ? name.substring(idx + 1).toLowerCase() : '';
+            }
+
+            function isImageFile(file) {
+                if (file.type && file.type.startsWith('image/')) return true;
+                return imageExts.has(getFileExtension(file.name || ''));
+            }
+
+            function isTextFile(file) {
+                if (file.type && (file.type.startsWith('text/') || file.type === 'application/json')) return true;
+                return textExts.has(getFileExtension(file.name || ''));
+            }
+
+            function readFileAsAttachment(file) {
+                return new Promise((resolve, reject) => {
+                    const isImage = isImageFile(file);
+                    const reader = new FileReader();
+
+                    reader.onload = () => {
+                        if (isImage) {
+                            // base64 encode
+                            const base64 = reader.result.split(',')[1] || '';
+                            resolve({
+                                name: file.name || 'image.png',
+                                mimeType: file.type || 'image/png',
+                                data: base64,
+                                isImage: true,
+                                size: file.size,
+                            });
+                        } else {
+                            resolve({
+                                name: file.name || 'file.txt',
+                                mimeType: file.type || 'text/plain',
+                                data: reader.result,
+                                isImage: false,
+                                size: file.size,
+                            });
+                        }
+                    };
+                    reader.onerror = () => reject(reader.error);
+
+                    if (isImage) {
+                        reader.readAsDataURL(file);
+                    } else {
+                        reader.readAsText(file);
+                    }
+                });
+            }
+
+            // === Drag and Drop ===
+            let dragCounter = 0; // Track nested drag events
+
+            requestContainer.addEventListener('dragenter', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dragCounter++;
+                if (requestContainer.classList.contains('visible')) {
+                    requestContainer.classList.add('drag-over');
+                }
+            });
+
+            requestContainer.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            requestContainer.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dragCounter--;
+                if (dragCounter <= 0) {
+                    dragCounter = 0;
+                    requestContainer.classList.remove('drag-over');
+                }
+            });
+
+            requestContainer.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dragCounter = 0;
+                requestContainer.classList.remove('drag-over');
+
+                if (!currentRequestId) return;
+
+                const files = e.dataTransfer ? e.dataTransfer.files : null;
+                if (!files || files.length === 0) return;
+
+                const droppedFiles = [];
+                for (let i = 0; i < files.length; i++) {
+                    try {
+                        const att = await readFileAsAttachment(files[i]);
+                        droppedFiles.push(att);
+                    } catch (err) {
+                        console.error('Failed to read dropped file:', err);
+                    }
+                }
+
+                if (droppedFiles.length > 0) {
+                    vscode.postMessage({ type: 'addDroppedFiles', droppedFiles: droppedFiles });
+                }
+            });
+
+            // === Clipboard Paste (images) ===
+            document.addEventListener('paste', async (e) => {
+                if (!currentRequestId) return;
+
+                const items = e.clipboardData ? e.clipboardData.items : [];
+                const filesToProcess = [];
+
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    // Only process file/image items (skip text/plain, text/html)
+                    if (item.kind === 'file') {
+                        const file = item.getAsFile();
+                        if (file) {
+                            filesToProcess.push(file);
+                        }
+                    }
+                }
+
+                if (filesToProcess.length === 0) return;
+
+                // Prevent the paste from inserting into textarea when we have files
+                e.preventDefault();
+
+                const droppedFiles = [];
+                for (const file of filesToProcess) {
+                    try {
+                        const att = await readFileAsAttachment(file);
+                        // Clipboard images often have no name
+                        if (!att.name || att.name === 'image.png') {
+                            att.name = 'clipboard-' + new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19) + '.png';
+                        }
+                        droppedFiles.push(att);
+                    } catch (err) {
+                        console.error('Failed to read pasted file:', err);
+                    }
+                }
+
+                if (droppedFiles.length > 0) {
+                    vscode.postMessage({ type: 'addDroppedFiles', droppedFiles: droppedFiles });
+                }
+            });
+
             // Handle messages from extension
             window.addEventListener('message', event => {
                 const message = event.data;
@@ -1773,6 +2416,18 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
                     case 'requestCancelled':
                         showRequestCancelled(message.reason);
+                        break;
+
+                    case 'filesAttached':
+                        if (message.attachments) {
+                            currentAttachments = message.attachments;
+                            renderAttachments();
+                        }
+                        if (message.attachError) {
+                            attachError.textContent = message.attachError;
+                            attachError.style.display = 'block';
+                            setTimeout(() => { attachError.style.display = 'none'; }, 5000);
+                        }
                         break;
                 }
             });

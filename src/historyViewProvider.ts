@@ -18,6 +18,7 @@ export class HistoryViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly historyManager: HistoryManager,
+    private readonly globalStorageUri: vscode.Uri,
   ) {
     // Subscribe to history changes for live updates
     this.disposables.push(
@@ -43,7 +44,10 @@ export class HistoryViewProvider {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [this.extensionUri],
+        localResourceRoots: [
+          this.extensionUri,
+          this.historyManager.getAttachmentsDir(),
+        ],
       },
     );
 
@@ -62,14 +66,23 @@ export class HistoryViewProvider {
 
     // Handle messages from webview
     this.panel.webview.onDidReceiveMessage(
-      (message) => {
+      async (message) => {
         switch (message.type) {
           case "clearHistory":
-            this.historyManager.clearHistory();
+            await this.historyManager.clearHistory();
             vscode.window.showInformationMessage("History cleared");
             break;
           case "refresh":
             this.updatePanel(this.historyManager.getHistory());
+            break;
+          case "openFile":
+            await this.handleOpenFile(message.relativePath);
+            break;
+          case "downloadFile":
+            await this.handleDownloadFile(
+              message.relativePath,
+              message.fileName,
+            );
             break;
         }
       },
@@ -88,6 +101,50 @@ export class HistoryViewProvider {
       return;
     }
     this.panel.webview.html = this.getHtml(history);
+  }
+
+  /**
+   * Open an attachment file in VS Code editor or image viewer
+   */
+  private async handleOpenFile(relativePath: string): Promise<void> {
+    try {
+      const fileUri = this.historyManager.getAttachmentUri(relativePath);
+      // Check if file exists
+      await vscode.workspace.fs.stat(fileUri);
+      // Open in editor
+      const doc = await vscode.workspace.openTextDocument(fileUri);
+      await vscode.window.showTextDocument(doc, { preview: true });
+    } catch {
+      vscode.window.showErrorMessage(`Cannot open file: ${relativePath}`);
+    }
+  }
+
+  /**
+   * Download (save as) an attachment file
+   */
+  private async handleDownloadFile(
+    relativePath: string,
+    fileName: string,
+  ): Promise<void> {
+    try {
+      const sourceUri = this.historyManager.getAttachmentUri(relativePath);
+      // Check if source exists
+      await vscode.workspace.fs.stat(sourceUri);
+
+      const targetUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(fileName),
+        title: "Save Attachment",
+      });
+
+      if (targetUri) {
+        await vscode.workspace.fs.copy(sourceUri, targetUri, {
+          overwrite: true,
+        });
+        vscode.window.showInformationMessage(`File saved: ${targetUri.fsPath}`);
+      }
+    } catch {
+      vscode.window.showErrorMessage(`Cannot save file: ${relativePath}`);
+    }
   }
 
   /**
@@ -239,6 +296,83 @@ export class HistoryViewProvider {
   }
 
   /**
+   * Format file size for display
+   */
+  private formatFileSize(bytes: number): string {
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  /**
+   * Render attachments section for a history entry
+   */
+  private renderAttachments(entry: HistoryEntry): string {
+    if (
+      !entry.attachmentRefs ||
+      entry.attachmentRefs.length === 0 ||
+      !this.panel
+    ) {
+      return "";
+    }
+
+    const attachmentsHtml = entry.attachmentRefs
+      .map((ref) => {
+        const webviewUri = this.panel!.webview.asWebviewUri(
+          this.historyManager.getAttachmentUri(ref.relativePath),
+        );
+
+        if (ref.isImage) {
+          return `
+          <div class="history-attachment-item">
+            <img src="${webviewUri}" class="history-attachment-thumbnail" 
+                 data-full-src="${webviewUri}" data-name="${this.escapeHtml(ref.name)}"
+                 title="Click to view full size" />
+            <div class="history-attachment-info">
+              <span class="history-attachment-name" title="${this.escapeHtml(ref.name)}">${this.escapeHtml(ref.name)}</span>
+              <span class="history-attachment-size">${this.formatFileSize(ref.size)}</span>
+            </div>
+            <div class="history-attachment-actions">
+              <button class="history-att-btn" data-action="downloadFile" 
+                      data-path="${this.escapeHtml(ref.relativePath)}" 
+                      data-name="${this.escapeHtml(ref.name)}" title="Save as...">💾</button>
+            </div>
+          </div>
+        `;
+        } else {
+          return `
+          <div class="history-attachment-item">
+            <span class="history-attachment-icon">📄</span>
+            <div class="history-attachment-info">
+              <span class="history-attachment-name" title="${this.escapeHtml(ref.name)}">${this.escapeHtml(ref.name)}</span>
+              <span class="history-attachment-size">${this.formatFileSize(ref.size)}</span>
+            </div>
+            <div class="history-attachment-actions">
+              <button class="history-att-btn" data-action="openFile" 
+                      data-path="${this.escapeHtml(ref.relativePath)}" title="Open in editor">📂</button>
+              <button class="history-att-btn" data-action="downloadFile" 
+                      data-path="${this.escapeHtml(ref.relativePath)}" 
+                      data-name="${this.escapeHtml(ref.name)}" title="Save as...">💾</button>
+            </div>
+          </div>
+        `;
+        }
+      })
+      .join("");
+
+    return `
+      <div class="history-attachments-section">
+        <div class="history-attachments-label">📎 Attachments (${entry.attachmentRefs.length}):</div>
+        <div class="history-attachments-list">${attachmentsHtml}</div>
+      </div>
+    `;
+  }
+
+  /**
    * Generate HTML for history panel
    */
   private getHtml(history: HistoryEntry[]): string {
@@ -284,6 +418,7 @@ export class HistoryViewProvider {
           `
               : ""
           }
+          ${this.renderAttachments(entry)}
           ${entry.error ? `<div class="entry-error"><strong>Error:</strong> ${this.escapeHtml(entry.error)}</div>` : ""}
         </div>
       `;
@@ -295,7 +430,7 @@ export class HistoryViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src https: http: data:;">
     <title>Request History</title>
     <style>
         body {
@@ -562,7 +697,6 @@ export class HistoryViewProvider {
             display: block;
         }
 
-        .entry-message-full pre,
         .response-full pre {
             background-color: var(--vscode-textBlockQuote-background);
             border: 1px solid var(--vscode-widget-border);
@@ -632,6 +766,8 @@ export class HistoryViewProvider {
         /* Markdown styles for expanded messages */
         .markdown-content {
             line-height: 1.5;
+            white-space: normal;
+            word-wrap: break-word;
         }
 
         .markdown-content > :first-child {
@@ -672,6 +808,11 @@ export class HistoryViewProvider {
             font-family: var(--vscode-editor-font-family);
             font-size: 12px;
             white-space: pre;
+        }
+
+        .markdown-content pre {
+            max-height: 400px;
+            overflow-y: auto;
         }
 
         .markdown-content code {
@@ -755,6 +896,182 @@ export class HistoryViewProvider {
         .markdown-content tr:nth-child(even) {
             background-color: var(--vscode-list-hoverBackground);
         }
+
+        /* History Attachments */
+        .history-attachments-section {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--vscode-widget-border);
+        }
+
+        .history-attachments-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 8px;
+        }
+
+        .history-attachments-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .history-attachment-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--vscode-editor-inactiveSelectionBackground);
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 6px;
+            padding: 6px 10px;
+            max-width: 280px;
+        }
+
+        .history-attachment-thumbnail {
+            width: 48px;
+            height: 48px;
+            object-fit: cover;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            flex-shrink: 0;
+        }
+
+        .history-attachment-thumbnail:hover {
+            opacity: 0.8;
+        }
+
+        .history-attachment-icon {
+            font-size: 24px;
+            flex-shrink: 0;
+            width: 32px;
+            text-align: center;
+        }
+
+        .history-attachment-info {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .history-attachment-name {
+            font-size: 12px;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .history-attachment-size {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .history-attachment-actions {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .history-att-btn {
+            background: transparent;
+            border: 1px solid var(--vscode-widget-border);
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-size: 12px;
+            cursor: pointer;
+            color: var(--vscode-foreground);
+            transition: background-color 0.2s;
+        }
+
+        .history-att-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        /* Image Lightbox */
+        .lightbox-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            cursor: pointer;
+        }
+
+        .lightbox-overlay.visible {
+            display: flex;
+        }
+
+        .lightbox-content {
+            position: relative;
+            max-width: 90%;
+            max-height: 85%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .lightbox-content img {
+            max-width: 100%;
+            max-height: 80vh;
+            object-fit: contain;
+            border-radius: 4px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        .lightbox-filename {
+            color: #fff;
+            font-size: 13px;
+            margin-top: 12px;
+            text-align: center;
+            opacity: 0.9;
+        }
+
+        .lightbox-close {
+            position: absolute;
+            top: -36px;
+            right: -8px;
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px 8px;
+            opacity: 0.8;
+        }
+
+        .lightbox-close:hover {
+            opacity: 1;
+        }
+
+        .lightbox-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .lightbox-actions button {
+            padding: 6px 16px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .lightbox-actions button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
     </style>
 </head>
 <body>
@@ -778,6 +1095,18 @@ export class HistoryViewProvider {
         ${entriesHtml}
     </div>
 
+    <!-- Image Lightbox -->
+    <div class="lightbox-overlay" id="lightbox">
+        <div class="lightbox-content">
+            <button class="lightbox-close" id="lightboxClose">✕</button>
+            <img id="lightboxImg" src="" alt="" />
+            <div class="lightbox-filename" id="lightboxName"></div>
+            <div class="lightbox-actions">
+                <button id="lightboxDownload">💾 Save as...</button>
+            </div>
+        </div>
+    </div>
+
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         
@@ -789,6 +1118,76 @@ export class HistoryViewProvider {
 
         document.getElementById('refreshBtn').addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
+        });
+
+        // === Lightbox ===
+        const lightbox = document.getElementById('lightbox');
+        const lightboxImg = document.getElementById('lightboxImg');
+        const lightboxName = document.getElementById('lightboxName');
+        let currentLightboxPath = '';
+        let currentLightboxFileName = '';
+
+        function showLightbox(src, name, path) {
+            lightboxImg.src = src;
+            lightboxName.textContent = name;
+            currentLightboxPath = path || '';
+            currentLightboxFileName = name;
+            lightbox.classList.add('visible');
+        }
+
+        function hideLightbox() {
+            lightbox.classList.remove('visible');
+            lightboxImg.src = '';
+        }
+
+        document.getElementById('lightboxClose').addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideLightbox();
+        });
+
+        lightbox.addEventListener('click', (e) => {
+            if (e.target === lightbox) {
+                hideLightbox();
+            }
+        });
+
+        document.getElementById('lightboxDownload').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (currentLightboxPath) {
+                vscode.postMessage({ 
+                    type: 'downloadFile', 
+                    relativePath: currentLightboxPath, 
+                    fileName: currentLightboxFileName 
+                });
+            }
+        });
+
+        // === Image thumbnails (click to view) ===
+        document.querySelectorAll('.history-attachment-thumbnail').forEach(img => {
+            img.addEventListener('click', () => {
+                const fullSrc = img.getAttribute('data-full-src');
+                const name = img.getAttribute('data-name');
+                // Find the parent's download button to get the path
+                const item = img.closest('.history-attachment-item');
+                const downloadBtn = item ? item.querySelector('[data-action="downloadFile"]') : null;
+                const path = downloadBtn ? downloadBtn.getAttribute('data-path') : '';
+                showLightbox(fullSrc, name, path);
+            });
+        });
+
+        // === Attachment action buttons ===
+        document.querySelectorAll('.history-att-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const action = btn.getAttribute('data-action');
+                const path = btn.getAttribute('data-path');
+                const name = btn.getAttribute('data-name') || '';
+
+                if (action === 'openFile') {
+                    vscode.postMessage({ type: 'openFile', relativePath: path });
+                } else if (action === 'downloadFile') {
+                    vscode.postMessage({ type: 'downloadFile', relativePath: path, fileName: name });
+                }
+            });
         });
 
         // Handle expand/collapse buttons
@@ -821,6 +1220,13 @@ export class HistoryViewProvider {
                     if (respFull) respFull.classList.remove('visible');
                 }
             });
+        });
+
+        // ESC key to close lightbox
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && lightbox.classList.contains('visible')) {
+                hideLightbox();
+            }
         });
     </script>
 </body>

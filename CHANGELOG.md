@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-05
+
+### Added
+
+- **Attachment storage and viewing in history** 📂
+  - Attachment files are now persistently stored on disk in extension's globalStorage
+  - History entries display attached files with thumbnails for images and file info for text/other files
+  - Click on image thumbnail to open full-size lightbox viewer with save button
+  - Open text/source files directly in VS Code editor from history
+  - Download/save any attachment to a custom location via "Save as..." button
+  - Attachments are automatically cleaned up when history entries are pruned (at 100 entry limit)
+  - Attachments are cleaned up when history is cleared
+  - File deduplication: duplicate filenames in same entry get `(1)`, `(2)` suffixes
+  - Uses `vscode.workspace.fs` for cross-environment compatibility (WSL, Remote, Codespaces)
+
+- **Drag & drop file attachment** 🖱️
+  - Drag files from the file system directly into the request panel to attach
+  - Visual drop zone feedback with dashed outline and hint text
+  - Supports images and text files
+
+- **Clipboard paste attachment** 📋
+  - Paste images from clipboard (screenshots, copied images) directly into the panel
+  - Clipboard images get auto-generated names with timestamps
+  - Works with Ctrl+V / Cmd+V
+  - Uses `vscode.workspace.fs` for cross-environment compatibility (WSL, Remote, Codespaces)
+
+## [1.1.0] - 2026-03-05
+
+### Added
+
+- **File and image attachment support for all three tools** 📎
+  - Users can now attach files and images when responding to any tool (ask_user_text, ask_user_confirm, ask_user_buttons)
+  - Attached images are sent as MCP `image` content type with base64 data (supports PNG, JPG, JPEG, GIF, WebP, BMP, SVG, ICO, TIFF)
+  - Attached text/source files are sent as additional MCP `text` content items with filename headers
+  - Supports a wide range of text file formats: source code (.js, .ts, .py, .java, .c, .cpp, .rs, .go, etc.), config files (.json, .yaml, .toml, .ini, etc.), logs (.log, .txt), and more
+  - Multiple file attachments supported (up to 10 files per response)
+  - File size limits: 10MB for images, 1MB for text files
+  - Uses VS Code native file picker for reliable cross-environment support (local, WSL, Remote SSH, Codespaces)
+  - Attachment previews with thumbnails for images and file info for text files
+  - Individual attachment removal with ✕ button
+
+### Fixed
+
+- **Markdown rendering in history expanded view** 📝
+  - Fixed CSS specificity conflict between `.entry-message-full pre` and `.markdown-content pre` styles
+  - Separated pre styles for response-full (raw text) and markdown-content (rendered markdown)
+  - Added `white-space: normal` to `.markdown-content` for proper text flow
+  - Added `max-height` to markdown pre blocks for better scrollable code blocks
+  - Updated CSP to include `img-src` for image support in history view
+
 ## [1.0.36] - 2025-02-04
 
 ### Documentation

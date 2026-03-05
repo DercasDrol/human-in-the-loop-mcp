@@ -41,6 +41,7 @@ export async function activate(
   historyViewProvider = new HistoryViewProvider(
     context.extensionUri,
     historyManager,
+    context.globalStorageUri,
   );
   context.subscriptions.push({ dispose: () => historyViewProvider?.dispose() });
 
