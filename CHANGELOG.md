@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-07
+
+### Added
+
+- **SSE keepalive for long-running tool calls** 🔄
+  - Tool call HTTP responses now use Server-Sent Events (SSE) streaming when the client supports it (sends `Accept: text/event-stream`)
+  - Keepalive comments (`: keepalive`) are sent every 15 seconds to prevent agent-side HTTP timeouts (e.g. the common 300s MCP timeout)
+  - If the client provides a `progressToken` in `_meta`, the server sends `notifications/progress` messages with elapsed time info
+  - Falls back to standard JSON response for clients that don't support SSE (backward compatible)
+  - The user-configured timeout remains the authoritative timeout; SSE keepalive only prevents premature HTTP disconnection
+
+### Fixed
+
+- **Message text lost when agent sends both `prompt` and `message` fields** 🐛
+  - Previously, `ask_user_text` used `prompt || message` — if `prompt` existed (even as a short question), the detailed `message` content was completely discarded
+  - `ask_user_buttons` and `ask_user_confirm` only read `message`, ignoring any content sent in `prompt`
+  - Now all three tools combine both fields when present: detailed content (`message`) is shown first, followed by the question (`prompt`)
+  - If only one field is provided, it is used as-is (backward compatible)
+
+- **Literal `\n` escape sequences not rendered as newlines** 🐛
+  - Agents sometimes send literal `\n` characters (backslash + n) instead of real newline characters in message text
+  - Added `normalizeEscapes()` function that converts literal `\n` and `\t` to real newlines and tabs before rendering
+  - This ensures Markdown formatting works correctly regardless of how the agent serializes escape sequences
+
+### Improved
+
+- **Simplified tool schemas — single `message` parameter** 📋
+  - All three tools now use `message` as the single primary text parameter
+  - Removed `prompt` from tool input schemas to eliminate confusion about which parameter to use
+  - `prompt` is still accepted in code for backward compatibility (treated as alias for `message`)
+  - When both `prompt` and `message` are sent by legacy agents, both are displayed (message first, prompt appended)
+
+- **Comprehensive tool descriptions** 📄
+  - Added file attachment support documentation (images, text files via picker/drag & drop/clipboard)
+  - Added response format documentation (text, image, text file content blocks)
+  - Added timer pause functionality description
+  - Fixed auto-submit description accuracy (only submits if input is non-empty)
+  - Added agent disconnect detection information
+  - Added keyboard shortcut info (Enter to send, Shift+Enter for new line)
+
+## [1.2.1] - 2026-03-07
+
+### Fixed
+
+- **Message text lost when agent sends both `prompt` and `message` fields** 🐛
+  - Previously, `ask_user_text` used `prompt || message` — if `prompt` existed (even as a short question), the detailed `message` content was completely discarded
+  - `ask_user_buttons` and `ask_user_confirm` only read `message`, ignoring any content sent in `prompt`
+  - Now all three tools combine both fields when present: detailed content (`message`) is shown first, followed by the question (`prompt`)
+  - If only one field is provided, it is used as-is (backward compatible)
+
+### Improved
+
+- **Unified tool input schemas** 📋
+  - All three tools (`ask_user_text`, `ask_user_confirm`, `ask_user_buttons`) now accept both `prompt` and `message` parameters
+  - Previously `ask_user_text` only had `prompt`, while `ask_user_buttons`/`ask_user_confirm` only had `message` — this inconsistency confused agents
+  - `message` and `prompt` fields now relaxed from `required` to optional (only `title` is required) for maximum compatibility
+
 ## [1.2.0] - 2026-03-05
 
 ### Added

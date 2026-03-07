@@ -48,6 +48,43 @@ function validateString(
 }
 
 /**
+ * Normalize literal escape sequences in message text.
+ * Agents sometimes send `\n` as literal backslash + n characters
+ * instead of real newline characters. This normalizes them.
+ * @param text - Text that may contain literal escape sequences
+ * @returns Text with normalized newlines and tabs
+ */
+function normalizeEscapes(text: string): string {
+  return text
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t");
+}
+
+/**
+ * Combine prompt and message fields from tool arguments.
+ * Agents may send content in either or both fields.
+ * `prompt` is accepted as a backward-compatible alias for `message`.
+ * When both exist, they are concatenated.
+ * @param safeArgs - Tool arguments object
+ * @returns Combined message string
+ */
+function combinePromptAndMessage(safeArgs: Record<string, unknown>): string {
+  const prompt =
+    typeof safeArgs.prompt === "string" ? safeArgs.prompt.trim() : "";
+  const message =
+    typeof safeArgs.message === "string" ? safeArgs.message.trim() : "";
+
+  let combined: string;
+  if (prompt && message) {
+    combined = message + "\n\n" + prompt;
+  } else {
+    combined = message || prompt || "";
+  }
+
+  return normalizeEscapes(combined);
+}
+
+/**
  * Validate button options array
  * @param options - Options array to validate
  * @returns Validated and sanitized options array
@@ -741,12 +778,22 @@ export class MCPServer {
         // Log all incoming requests for debugging
         logger.mcp("IN", jsonRpcRequest);
 
-        const response = await this.processJsonRpc(jsonRpcRequest, req, res);
+        // Check if this is a tool call that can benefit from SSE streaming
+        // SSE keeps the HTTP connection alive during long waits for user response
+        const isToolCall = jsonRpcRequest.method === "tools/call";
+        const acceptsSSE = (req.headers["accept"] || "")
+          .includes("text/event-stream");
 
-        logger.mcp("OUT", response);
-
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(response));
+        if (isToolCall && acceptsSSE) {
+          // Use SSE streaming for tool calls (prevents agent timeout)
+          await this.handleToolCallWithSSE(jsonRpcRequest, req, res);
+        } else {
+          // Standard JSON response
+          const response = await this.processJsonRpc(jsonRpcRequest, req, res);
+          logger.mcp("OUT", response);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(response));
+        }
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
@@ -764,6 +811,117 @@ export class MCPServer {
         );
       }
     });
+  }
+
+  /**
+   * Handle a tool call with SSE (Server-Sent Events) streaming.
+   * This keeps the HTTP connection alive during long waits for user response,
+   * preventing agent-side timeouts (e.g. the common 300s MCP timeout).
+   *
+   * Uses:
+   * - SSE keepalive comments (`: keepalive`) every 15 seconds
+   * - MCP progress notifications if the client provides a progressToken
+   * - Final response sent as the last SSE data event
+   */
+  private async handleToolCallWithSSE(
+    jsonRpcRequest: any,
+    httpReq: http.IncomingMessage,
+    httpRes: http.ServerResponse,
+  ): Promise<void> {
+    const { id, params } = jsonRpcRequest;
+    const progressToken = params?._meta?.progressToken;
+
+    // Write SSE headers immediately to establish the stream
+    httpRes.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no", // Disable nginx/proxy buffering
+    });
+
+    // Flush headers
+    if (typeof (httpRes as any).flushHeaders === "function") {
+      (httpRes as any).flushHeaders();
+    }
+
+    let progressCount = 0;
+    let isClosed = false;
+
+    // Send keepalive comments and optional progress notifications every 15 seconds
+    const keepaliveInterval = setInterval(() => {
+      if (isClosed) return;
+
+      try {
+        progressCount++;
+
+        // SSE comment — ignored by SSE clients but keeps HTTP connection alive
+        httpRes.write(": keepalive\n\n");
+
+        // If progressToken is provided, also send MCP progress notification
+        if (progressToken) {
+          const elapsed = progressCount * 15;
+          const progressNotification = {
+            jsonrpc: "2.0",
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: progressCount,
+              message: `Waiting for user response... (${elapsed}s)`,
+            },
+          };
+          httpRes.write(
+            `data: ${JSON.stringify(progressNotification)}\n\n`,
+          );
+        }
+
+        logger.debug(`SSE keepalive sent (${progressCount * 15}s elapsed)`);
+      } catch (e) {
+        // Connection likely closed
+        isClosed = true;
+        clearInterval(keepaliveInterval);
+      }
+    }, 15000);
+
+    // Handle connection close
+    httpRes.on("close", () => {
+      isClosed = true;
+      clearInterval(keepaliveInterval);
+    });
+
+    try {
+      // Process the request — this awaits until user responds (may take minutes)
+      const response = await this.processJsonRpc(
+        jsonRpcRequest,
+        httpReq,
+        httpRes,
+      );
+
+      logger.mcp("OUT", response);
+
+      // Send the final response as SSE data event
+      if (!isClosed) {
+        httpRes.write(`data: ${JSON.stringify(response)}\n\n`);
+        httpRes.end();
+      }
+    } catch (error) {
+      if (!isClosed) {
+        const errorResponse = {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32603,
+            message: "Internal error",
+            data:
+              error instanceof Error ? error.message : "Unknown error",
+          },
+        };
+        httpRes.write(`data: ${JSON.stringify(errorResponse)}\n\n`);
+        httpRes.end();
+      }
+    } finally {
+      isClosed = true;
+      clearInterval(keepaliveInterval);
+    }
   }
 
   /**
@@ -942,10 +1100,18 @@ WHEN NOT TO USE:
 - When you can infer the answer from context without user input
 
 BEHAVIOR:
-- User sees a text input field with your prompt message
-- User can type any text and submit
-- If timeout expires, returns a timeout error (unless auto-submit is enabled)
-- The prompt message supports full Markdown formatting (GFM)
+- User sees a multi-line text input field with your message
+- User can type any text and submit (Enter to send, Shift+Enter for new line)
+- User can attach files (images, text, source code) via file picker, drag & drop, or clipboard paste
+- If timeout expires, returns a timeout error. If auto-submit is enabled AND the user has typed text, the typed text is submitted automatically before timeout
+- User can pause the countdown timer to extend response time
+- The message supports full Markdown formatting (GFM)
+- If the agent disconnects (HTTP connection closes), the request is automatically cancelled and the user is notified
+
+RESPONSE FORMAT:
+- Text response: [{type: "text", text: "user's answer"}]
+- With image attachment: + [{type: "image", data: "base64...", mimeType: "image/png"}]
+- With text file attachment: + [{type: "text", text: "--- filename.txt ---\nfile content"}]
 
 BEST PRACTICES:
 - Provide clear, specific prompts explaining what input is expected
@@ -960,10 +1126,10 @@ BEST PRACTICES:
                 description:
                   "Short descriptive title shown at the top of the input panel (e.g., 'API Key Required', 'Enter File Path')",
               },
-              prompt: {
+              message: {
                 type: "string",
                 description:
-                  "Detailed prompt message explaining what input is needed. Supports full Markdown formatting including headers, lists, code blocks, links, and emphasis.",
+                  "Message displayed to the user. Supports full Markdown formatting (GFM) including headers, lists, code blocks, tables, links, and emphasis. Use this for prompts, questions, explanations, or any context.",
               },
               placeholder: {
                 type: "string",
@@ -971,7 +1137,7 @@ BEST PRACTICES:
                   "Example text shown in the empty input field to guide the user (e.g., 'sk-...' for API keys, '/home/user/project' for paths)",
               },
             },
-            required: ["title", "prompt"],
+            required: ["title"],
           },
         },
         {
@@ -991,9 +1157,17 @@ WHEN NOT TO USE:
 
 BEHAVIOR:
 - User sees Yes and No buttons
-- User can also provide a custom text response instead of Yes/No
+- User can also expand a custom text input to provide a free-form response instead of Yes/No
+- User can attach files (images, text, source code) via file picker, drag & drop, or clipboard paste
 - Returns "Yes", "No", or the custom text entered by user
+- User can pause the countdown timer to extend response time
 - The message supports full Markdown formatting (GFM)
+- If the agent disconnects, the request is automatically cancelled
+
+RESPONSE FORMAT:
+- Confirmation: [{type: "text", text: "Yes"}] or [{type: "text", text: "No"}]
+- Custom text: [{type: "text", text: "user's custom response"}]
+- With attachments: additional [{type: "image", ...}] or [{type: "text", text: "--- file ---\n..."}] entries
 
 BEST PRACTICES:
 - Make the consequences of Yes/No clear in the message
@@ -1011,10 +1185,10 @@ BEST PRACTICES:
               message: {
                 type: "string",
                 description:
-                  "Detailed explanation of what the user is confirming. Should clearly explain the consequences of Yes vs No. Supports full Markdown formatting.",
+                  "Message displayed to the user explaining what they are confirming. Should clearly explain the consequences of Yes vs No. Supports full Markdown formatting (GFM).",
               },
             },
-            required: ["title", "message"],
+            required: ["title"],
           },
         },
         {
@@ -1034,9 +1208,17 @@ WHEN NOT TO USE:
 
 BEHAVIOR:
 - User sees buttons for each option you provide
-- User can click a button or enter custom text response
+- User can click a button or expand a custom text input to provide a free-form response
+- User can attach files (images, text, source code) via file picker, drag & drop, or clipboard paste
 - Returns the 'value' of the clicked button, or the custom text
+- User can pause the countdown timer to extend response time
 - The message supports full Markdown formatting (GFM)
+- If the agent disconnects, the request is automatically cancelled
+
+RESPONSE FORMAT:
+- Button click: [{type: "text", text: "selected_value"}]
+- Custom text: [{type: "text", text: "user's custom response"}]
+- With attachments: additional [{type: "image", ...}] or [{type: "text", text: "--- file ---\n..."}] entries
 
 BEST PRACTICES:
 - Use clear, descriptive button labels
@@ -1055,7 +1237,7 @@ BEST PRACTICES:
               message: {
                 type: "string",
                 description:
-                  "Explanatory message shown above the buttons. Can include descriptions of each option. Supports full Markdown formatting.",
+                  "Message displayed above the buttons. Can include descriptions of each option. Supports full Markdown formatting (GFM).",
               },
               options: {
                 type: "array",
@@ -1079,7 +1261,7 @@ BEST PRACTICES:
                   "Array of button options. Each option has a human-readable label and a machine-readable value.",
               },
             },
-            required: ["title", "message", "options"],
+            required: ["title", "options"],
           },
         },
       ],
@@ -1126,7 +1308,7 @@ BEST PRACTICES:
             "Input Required",
           ),
           message: validateString(
-            safeArgs.prompt || safeArgs.message,
+            combinePromptAndMessage(safeArgs),
             MAX_MESSAGE_LENGTH,
             "",
           ),
@@ -1149,7 +1331,11 @@ BEST PRACTICES:
             MAX_TITLE_LENGTH,
             "Confirmation Required",
           ),
-          message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
+          message: validateString(
+            combinePromptAndMessage(safeArgs),
+            MAX_MESSAGE_LENGTH,
+            "",
+          ),
           timestamp: now,
           serverEndTime,
         } as ConfirmToolRequest;
@@ -1164,7 +1350,11 @@ BEST PRACTICES:
             MAX_TITLE_LENGTH,
             "Selection Required",
           ),
-          message: validateString(safeArgs.message, MAX_MESSAGE_LENGTH, ""),
+          message: validateString(
+            combinePromptAndMessage(safeArgs),
+            MAX_MESSAGE_LENGTH,
+            "",
+          ),
           options: validateOptions(safeArgs.options),
           timestamp: now,
           serverEndTime,
