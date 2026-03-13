@@ -110,11 +110,17 @@ export interface ExtensionToWebviewMessage {
   countdown?: number;
   /** Absolute timestamp when server timeout will occur (for UI sync) */
   serverEndTime?: number;
+  /** Original total timeout in seconds (for progress bar) */
+  totalTimeout?: number;
+  /** Whether this request should be the active tab */
+  isActive?: boolean;
+  /** Sequential tab number for display */
+  tabNumber?: number;
   serverUrl?: string;
   serverPort?: number;
   configStatus?: "not-configured" | "configured" | "running";
   isPaused?: boolean; // Timer pause state
-  // For requestCancelled
+  // For requestCancelled / clearRequest / filesAttached
   requestId?: string;
   reason?: string;
   settings?: {
@@ -141,7 +147,9 @@ export interface WebviewToExtensionMessage {
     | "showHistory"
     | "attachFiles"
     | "removeAttachment"
-    | "addDroppedFiles";
+    | "addDroppedFiles"
+    | "switchTab"
+    | "formValueUpdate";
   requestId?: string;
   value?: string | boolean;
   /** File attachments included with the response */

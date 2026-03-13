@@ -55,9 +55,7 @@ function validateString(
  * @returns Text with normalized newlines and tabs
  */
 function normalizeEscapes(text: string): string {
-  return text
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t");
+  return text.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
 }
 
 /**
@@ -145,6 +143,12 @@ export class MCPServer {
   private onRequestCallback: ((request: ToolRequest) => void) | null = null;
   private onRequestCancelledCallback:
     | ((requestId: string, reason: string) => void)
+    | null = null;
+  private onPreTimeoutCallback:
+    | ((
+        requestId: string,
+        request: ToolRequest,
+      ) => { value: string; attachments?: Attachment[] } | null)
     | null = null;
   private historyManager: HistoryManager | null = null;
   private statusBarItem: vscode.StatusBarItem;
@@ -414,6 +418,93 @@ export class MCPServer {
   }
 
   /**
+   * Set callback for pre-timeout auto-submit.
+   * Called right before a request times out. If the callback returns a non-null
+   * object with `value` and optional `attachments`, that is used as the user
+   * response (auto-submit) and the timeout is prevented.
+   * Return `null` to let the timeout proceed normally.
+   */
+  public onPreTimeout(
+    callback: (
+      requestId: string,
+      request: ToolRequest,
+    ) => { value: string; attachments?: Attachment[] } | null,
+  ): void {
+    this.onPreTimeoutCallback = callback;
+  }
+
+  /**
+   * Handle request timeout — called when a setTimeout fires for a pending request.
+   * Checks for auto-submit via onPreTimeoutCallback before resolving with timeout.
+   * This method is shared by the initial timeout and the resume timeout.
+   */
+  private handleRequestTimeout(requestId: string): void {
+    // Auto-submit: check if extension wants to provide a value before timing out
+    if (this.onPreTimeoutCallback) {
+      const pending = this.pendingRequests.get(requestId);
+      if (pending) {
+        try {
+          const result = this.onPreTimeoutCallback(
+            requestId,
+            pending.request,
+          );
+          if (result !== null) {
+            logger.request(requestId, "Auto-submit on timeout", {
+              value: result.value,
+              hasAttachments: !!(
+                result.attachments && result.attachments.length
+              ),
+            });
+            this.handleUserResponse(
+              requestId,
+              result.value,
+              result.attachments,
+            );
+            return;
+          }
+        } catch (error) {
+          logger.error(
+            `onPreTimeout callback failed for request ${requestId}`,
+            error,
+          );
+          // Fall through to normal timeout handling
+        }
+      }
+    }
+
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) {
+      return;
+    }
+
+    // Clear check interval
+    if (pending.checkIntervalId) {
+      clearInterval(pending.checkIntervalId);
+    }
+    this.deletePendingRequest(requestId);
+
+    // Record timeout in history
+    if (this.historyManager) {
+      this.historyManager.updateEntry(
+        requestId,
+        "timeout",
+        undefined,
+        "Request timed out",
+      );
+    }
+    // Notify UI that request timed out
+    if (this.onRequestCancelledCallback) {
+      this.onRequestCancelledCallback(requestId, "Request timed out");
+    }
+    pending.resolve({
+      id: requestId,
+      success: false,
+      timedOut: true,
+      error: "Request timed out waiting for user response",
+    });
+  }
+
+  /**
    * Start the MCP server
    * Returns port number if started, or null if no config found
    * Uses lock to prevent race conditions from rapid calls
@@ -666,7 +757,13 @@ export class MCPServer {
 
       // Record response in history (with attachments if any)
       if (this.historyManager) {
-        this.historyManager.updateEntry(requestId, "answered", value, undefined, attachments);
+        this.historyManager.updateEntry(
+          requestId,
+          "answered",
+          value,
+          undefined,
+          attachments,
+        );
       }
 
       pending.resolve({
@@ -781,8 +878,9 @@ export class MCPServer {
         // Check if this is a tool call that can benefit from SSE streaming
         // SSE keeps the HTTP connection alive during long waits for user response
         const isToolCall = jsonRpcRequest.method === "tools/call";
-        const acceptsSSE = (req.headers["accept"] || "")
-          .includes("text/event-stream");
+        const acceptsSSE = (req.headers["accept"] || "").includes(
+          "text/event-stream",
+        );
 
         if (isToolCall && acceptsSSE) {
           // Use SSE streaming for tool calls (prevents agent timeout)
@@ -835,7 +933,7 @@ export class MCPServer {
     httpRes.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
+      Connection: "keep-alive",
       "X-Accel-Buffering": "no", // Disable nginx/proxy buffering
     });
 
@@ -869,9 +967,7 @@ export class MCPServer {
               message: `Waiting for user response... (${elapsed}s)`,
             },
           };
-          httpRes.write(
-            `data: ${JSON.stringify(progressNotification)}\n\n`,
-          );
+          httpRes.write(`data: ${JSON.stringify(progressNotification)}\n\n`);
         }
 
         logger.debug(`SSE keepalive sent (${progressCount * 15}s elapsed)`);
@@ -911,8 +1007,7 @@ export class MCPServer {
           error: {
             code: -32603,
             message: "Internal error",
-            data:
-              error instanceof Error ? error.message : "Unknown error",
+            data: error instanceof Error ? error.message : "Unknown error",
           },
         };
         httpRes.write(`data: ${JSON.stringify(errorResponse)}\n\n`);
@@ -1377,36 +1472,11 @@ BEST PRACTICES:
     const responsePromise = new Promise<ToolResponse>((resolve, reject) => {
       let checkIntervalId: NodeJS.Timeout | null = null;
 
-      const timeoutHandler = () => {
-        // Clear check interval
-        if (checkIntervalId) {
-          clearInterval(checkIntervalId);
-        }
-        this.deletePendingRequest(requestId);
-        // Record timeout in history
-        if (this.historyManager) {
-          this.historyManager.updateEntry(
-            requestId,
-            "timeout",
-            undefined,
-            "Request timed out",
-          );
-        }
-        // Notify UI that request timed out
-        if (this.onRequestCancelledCallback) {
-          this.onRequestCancelledCallback(requestId, "Request timed out");
-        }
-        resolve({
-          id: requestId,
-          success: false,
-          timedOut: true,
-          error: "Request timed out waiting for user response",
-        });
-      };
-
       // If timeout is 0, don't set a timeout (infinite wait)
       const timeoutId =
-        timeout > 0 ? setTimeout(timeoutHandler, timeout) : null;
+        timeout > 0
+          ? setTimeout(() => this.handleRequestTimeout(requestId), timeout)
+          : null;
 
       // Listen for HTTP connection close (agent disconnected)
       // Use both event listeners and periodic polling for reliable detection
@@ -1557,7 +1627,12 @@ BEST PRACTICES:
     }
 
     // Build content array with text response and any attachments
-    const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [
+    const content: Array<{
+      type: string;
+      text?: string;
+      data?: string;
+      mimeType?: string;
+    }> = [
       {
         type: "text",
         text:
@@ -1644,15 +1719,10 @@ BEST PRACTICES:
 
     // If there's remaining time and it's not infinite timeout, restart the timeout
     if (pending.remainingTime > 0 && pending.totalTimeout > 0) {
-      pending.timeoutId = setTimeout(() => {
-        this.deletePendingRequest(requestId);
-        pending.resolve({
-          id: requestId,
-          success: false,
-          timedOut: true,
-          error: "Request timed out waiting for user response",
-        });
-      }, pending.remainingTime);
+      pending.timeoutId = setTimeout(
+        () => this.handleRequestTimeout(requestId),
+        pending.remainingTime,
+      );
     }
 
     pending.startTime = Date.now();
@@ -1679,5 +1749,33 @@ BEST PRACTICES:
       this.pauseRequest(requestId);
       return true;
     }
+  }
+
+  /**
+   * Get the absolute end time for a request (for UI synchronization)
+   * For paused requests, returns a synthetic endTime = now + remainingTime
+   * so the UI can display the correct "frozen" countdown.
+   * @returns Absolute end time in ms, 0 for infinite timeout, -1 if not found
+   */
+  public getRequestEndTime(requestId: string): number {
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) return -1;
+    if (pending.totalTimeout <= 0) return 0; // infinite
+    if (pending.isPaused) {
+      // Return synthetic endTime so UI can calculate correct paused remaining
+      return Date.now() + pending.remainingTime;
+    }
+    // Active: elapsed time since last startTime
+    const elapsed = Date.now() - pending.startTime;
+    const remaining = Math.max(0, pending.remainingTime - elapsed);
+    return Date.now() + remaining;
+  }
+
+  /**
+   * Check if a request is currently paused
+   */
+  public isRequestPaused(requestId: string): boolean {
+    const pending = this.pendingRequests.get(requestId);
+    return pending?.isPaused ?? false;
   }
 }

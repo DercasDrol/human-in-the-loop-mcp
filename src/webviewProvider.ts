@@ -20,18 +20,84 @@ const logger = getLogger();
 
 /** Image file extensions */
 const IMAGE_EXTENSIONS = new Set([
-  "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "tif",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "svg",
+  "ico",
+  "tiff",
+  "tif",
 ]);
 
 /** Text file extensions (source code, logs, configs, etc.) */
 const TEXT_EXTENSIONS = new Set([
-  "txt", "log", "md", "json", "xml", "yaml", "yml", "csv", "html", "htm",
-  "css", "js", "jsx", "ts", "tsx", "py", "java", "c", "cpp", "h", "hpp",
-  "cs", "rs", "go", "rb", "php", "sh", "bat", "ps1", "sql", "ini", "cfg",
-  "conf", "env", "toml", "dockerfile", "makefile", "gitignore", "editorconfig",
-  "properties", "gradle", "swift", "kt", "kts", "scala", "r", "lua", "pl",
-  "pm", "ex", "exs", "erl", "hs", "ml", "clj", "cljs", "vim", "el",
-  "lisp", "scm", "asm", "s", "diff", "patch",
+  "txt",
+  "log",
+  "md",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "csv",
+  "html",
+  "htm",
+  "css",
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
+  "py",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "hpp",
+  "cs",
+  "rs",
+  "go",
+  "rb",
+  "php",
+  "sh",
+  "bat",
+  "ps1",
+  "sql",
+  "ini",
+  "cfg",
+  "conf",
+  "env",
+  "toml",
+  "dockerfile",
+  "makefile",
+  "gitignore",
+  "editorconfig",
+  "properties",
+  "gradle",
+  "swift",
+  "kt",
+  "kts",
+  "scala",
+  "r",
+  "lua",
+  "pl",
+  "pm",
+  "ex",
+  "exs",
+  "erl",
+  "hs",
+  "ml",
+  "clj",
+  "cljs",
+  "vim",
+  "el",
+  "lisp",
+  "scm",
+  "asm",
+  "s",
+  "diff",
+  "patch",
 ]);
 
 /** Max file size for images (10MB) */
@@ -47,13 +113,18 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "humanInTheLoop.mainView";
 
   private _view?: vscode.WebviewView;
-  private currentRequest: ToolRequest | null = null;
-  private countdownInterval: NodeJS.Timeout | null = null;
-  private isPaused: boolean = false;
-  private currentCountdown: number = 0;
+  // Multi-request state: supports concurrent agent requests as tabs
+  private activeRequests: Map<
+    string,
+    { request: ToolRequest; messageHtml: string }
+  > = new Map();
+  private activeRequestId: string | null = null;
+  private requestAttachments: Map<string, Attachment[]> = new Map();
+  private tabCounter: number = 0; // Sequential tab numbering
+  private tabNumbers: Map<string, number> = new Map(); // requestId → tab number
   private cancellationRetryTimers: Map<string, NodeJS.Timeout[]> = new Map();
+  private formValues: Map<string, string> = new Map();
   private disposables: vscode.Disposable[] = [];
-  private pendingAttachments: Attachment[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -68,6 +139,21 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
     this.mcpServer.onRequestCancelled((requestId, reason) => {
       this.handleRequestCancelled(requestId, reason);
     });
+
+    // Set up auto-submit handler: called right before a request times out.
+    // If auto-submit is enabled, returns a value + attachments to submit instead of timing out.
+    this.mcpServer.onPreTimeout((requestId, request) => {
+      const value = this.getAutoSubmitValue(requestId, request);
+      if (value === null) {
+        return null;
+      }
+      // Include any attachments the user added before timeout
+      const atts = this.requestAttachments.get(requestId);
+      const attachList = atts && atts.length > 0 ? [...atts] : undefined;
+      // Schedule UI cleanup on next tick (after handleUserResponse resolves the promise)
+      setTimeout(() => this.removeRequest(requestId), 0);
+      return { value, attachments: attachList };
+    });
   }
 
   /**
@@ -79,14 +165,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
     // Clear any existing retry timers for this request
     this.clearCancellationRetryTimers(requestId);
 
-    // If currentRequest hasn't been set yet (race condition), wait a bit
-    // This can happen if disconnect fires before showRequest completes
+    // If request hasn't been set yet (race condition), wait a bit
     const attemptCancel = (retryCount: number = 0) => {
-      // Check if this is the current request OR if we're still waiting for currentRequest
-      if (this.currentRequest && this.currentRequest.id === requestId) {
+      if (this.activeRequests.has(requestId)) {
         logger.request(requestId, "Cancellation applied to UI", { retryCount });
         this.clearCancellationRetryTimers(requestId);
-        this.stopCountdown();
 
         if (this._view) {
           const message: ExtensionToWebviewMessage = {
@@ -97,14 +180,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
           this._view.webview.postMessage(message);
         }
 
-        // Clear current request after a delay to let user see the message
+        // Remove from active requests after a delay to let user see the message
         setTimeout(() => {
-          if (this.currentRequest?.id === requestId) {
-            this.currentRequest = null;
-          }
+          this.removeRequest(requestId);
         }, 5000);
       } else if (retryCount < 5) {
-        // Retry up to 5 times with 100ms delay (total 500ms max wait)
         logger.debug(
           `Cancellation retry ${retryCount + 1}/5 for request ${requestId}`,
         );
@@ -181,8 +261,16 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       if (webviewView.visible) {
         this.sendServerInfo();
         this.sendSettings();
-        if (this.currentRequest) {
-          this.sendRequest(this.currentRequest);
+        // Re-send all active requests as tabs
+        for (const [id, { request, messageHtml }] of this.activeRequests) {
+          this.sendRequest(request, messageHtml, id === this.activeRequestId);
+        }
+        // Re-send attachments for ALL requests (not just active)
+        for (const [id] of this.activeRequests) {
+          const atts = this.requestAttachments.get(id);
+          if (atts && atts.length > 0) {
+            this.sendAttachmentsUpdate(undefined, id);
+          }
         }
       }
     });
@@ -199,8 +287,17 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         logger.ui("Webview ready");
         this.sendServerInfo();
         this.sendSettings();
-        if (this.currentRequest) {
-          this.sendRequest(this.currentRequest);
+        // Re-send all active requests to webview
+        for (const [reqId, data] of this.activeRequests) {
+          const isActive = reqId === this.activeRequestId;
+          this.sendRequest(data.request, data.messageHtml, isActive);
+        }
+        // Re-send attachments for ALL requests (not just active)
+        for (const [reqId] of this.activeRequests) {
+          const atts = this.requestAttachments.get(reqId);
+          if (atts && atts.length > 0) {
+            this.sendAttachmentsUpdate(undefined, reqId);
+          }
         }
         break;
 
@@ -208,25 +305,47 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         if (message.requestId && message.value !== undefined) {
           logger.request(message.requestId, "User response", {
             value: message.value,
-            attachmentCount: this.pendingAttachments.length,
+            attachmentCount: (
+              this.requestAttachments.get(message.requestId) || []
+            ).length,
           });
-          // Use stored pendingAttachments (avoids round-tripping large data through webview)
-          const attachments = this.pendingAttachments.length > 0
-            ? [...this.pendingAttachments]
-            : undefined;
-          this.pendingAttachments = [];
+          // Use stored attachments for this specific request
+          const attachments = this.requestAttachments.get(message.requestId);
+          const attachList =
+            attachments && attachments.length > 0
+              ? [...attachments]
+              : undefined;
           this.mcpServer.handleUserResponse(
             message.requestId,
             message.value,
-            attachments,
+            attachList,
           );
-          this.clearRequest();
+          this.removeRequest(message.requestId);
         }
         break;
 
       case "togglePause":
-        logger.ui("Toggle pause requested");
-        this.togglePause();
+        if (message.requestId) {
+          logger.ui("Toggle pause requested", { requestId: message.requestId });
+          this.togglePause(message.requestId);
+        }
+        break;
+
+      case "switchTab":
+        if (message.requestId && this.activeRequests.has(message.requestId)) {
+          logger.ui("Tab switch requested", { requestId: message.requestId });
+          this.activeRequestId = message.requestId;
+        }
+        break;
+
+      case "formValueUpdate":
+        if (
+          message.requestId &&
+          message.value !== undefined &&
+          this.activeRequests.has(message.requestId)
+        ) {
+          this.formValues.set(message.requestId, String(message.value));
+        }
         break;
 
       case "showInstructions":
@@ -242,9 +361,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case "removeAttachment":
-        if (message.attachmentIndex !== undefined) {
-          this.pendingAttachments.splice(message.attachmentIndex, 1);
-          this.sendAttachmentsUpdate();
+        if (message.attachmentIndex !== undefined && this.activeRequestId) {
+          const atts = this.requestAttachments.get(this.activeRequestId);
+          if (atts) {
+            atts.splice(message.attachmentIndex, 1);
+            this.sendAttachmentsUpdate();
+          }
         }
         break;
 
@@ -259,24 +381,28 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   /**
    * Toggle pause state of countdown timer
    */
-  private togglePause(): void {
-    if (!this.currentRequest) {
+  private togglePause(requestId: string): void {
+    if (!this.activeRequests.has(requestId)) {
       return;
     }
 
     // Toggle pause on the MCP server (affects real timeout)
-    const newPauseState = this.mcpServer.togglePauseRequest(
-      this.currentRequest.id,
-    );
-    if (newPauseState !== undefined) {
-      this.isPaused = newPauseState;
+    const newPauseState = this.mcpServer.togglePauseRequest(requestId);
+    if (newPauseState === undefined) {
+      return;
     }
 
-    // Notify webview of pause state
-    this._view?.webview.postMessage({
+    // Notify webview of pause state for this specific request
+    const pauseMessage: ExtensionToWebviewMessage = {
       type: "pauseState",
-      isPaused: this.isPaused,
-    });
+      requestId,
+      isPaused: newPauseState,
+      // On resume, send updated serverEndTime so webview can sync its countdown
+      serverEndTime: !newPauseState
+        ? this.mcpServer.getRequestEndTime(requestId)
+        : undefined,
+    };
+    this._view?.webview.postMessage(pauseMessage);
   }
 
   /**
@@ -284,7 +410,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    * Opens VS Code native file picker, reads files, sends data back to webview
    */
   private async handleAttachFiles(): Promise<void> {
-    const remainingSlots = MAX_ATTACHMENTS - this.pendingAttachments.length;
+    // Capture requestId at start to prevent race condition if user switches tabs during file picker
+    const targetRequestId = this.activeRequestId;
+    if (!targetRequestId) return;
+    const currentAttachments =
+      this.requestAttachments.get(targetRequestId) || [];
+    const remainingSlots = MAX_ATTACHMENTS - currentAttachments.length;
     if (remainingSlots <= 0) {
       this._view?.webview.postMessage({
         type: "filesAttached",
@@ -298,13 +429,54 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       canSelectFolders: false,
       openLabel: "Attach Files",
       filters: {
-        "Images": ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tiff", "tif"],
+        Images: [
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "webp",
+          "bmp",
+          "svg",
+          "ico",
+          "tiff",
+          "tif",
+        ],
         "Text / Source": [
-          "txt", "log", "md", "json", "xml", "yaml", "yml", "csv",
-          "html", "htm", "css", "js", "jsx", "ts", "tsx", "py",
-          "java", "c", "cpp", "h", "hpp", "cs", "rs", "go", "rb",
-          "php", "sh", "bat", "ps1", "sql", "ini", "cfg", "conf",
-          "env", "toml",
+          "txt",
+          "log",
+          "md",
+          "json",
+          "xml",
+          "yaml",
+          "yml",
+          "csv",
+          "html",
+          "htm",
+          "css",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "py",
+          "java",
+          "c",
+          "cpp",
+          "h",
+          "hpp",
+          "cs",
+          "rs",
+          "go",
+          "rb",
+          "php",
+          "sh",
+          "bat",
+          "ps1",
+          "sql",
+          "ini",
+          "cfg",
+          "conf",
+          "env",
+          "toml",
         ],
         "All Files": ["*"],
       },
@@ -314,11 +486,20 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Check if the target request is still valid (may have been answered/cancelled during file picker)
+    if (!this.activeRequests.has(targetRequestId)) {
+      logger.warn(
+        `Target request ${targetRequestId} no longer exists after file picker`,
+      );
+      return;
+    }
+
     const errors: string[] = [];
     const newAttachments: Attachment[] = [];
 
     for (const uri of fileUris) {
-      if (newAttachments.length + this.pendingAttachments.length >= MAX_ATTACHMENTS) {
+      const existingAtts = this.requestAttachments.get(targetRequestId) || [];
+      if (newAttachments.length + existingAtts.length >= MAX_ATTACHMENTS) {
         errors.push(`Reached maximum of ${MAX_ATTACHMENTS} attachments`);
         break;
       }
@@ -332,18 +513,21 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
         // Size limits
         if (isImage && fileStat.size > MAX_IMAGE_SIZE) {
-          errors.push(`${fileName}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`);
+          errors.push(
+            `${fileName}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`,
+          );
           continue;
         }
         if (!isImage && fileStat.size > MAX_TEXT_SIZE) {
-          errors.push(`${fileName}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`);
+          errors.push(
+            `${fileName}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`,
+          );
           continue;
         }
 
         const fileData = await vscode.workspace.fs.readFile(uri);
 
         if (isImage) {
-          // Convert to base64 for images
           const base64 = Buffer.from(fileData).toString("base64");
           const mimeType = this.getMimeType(ext);
           newAttachments.push({
@@ -354,7 +538,6 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             size: fileStat.size,
           });
         } else if (isText || fileStat.size < MAX_TEXT_SIZE) {
-          // Read as text for text files or small unknown files
           const textContent = Buffer.from(fileData).toString("utf-8");
           const mimeType = this.getTextMimeType(ext);
           newAttachments.push({
@@ -365,7 +548,6 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             size: fileStat.size,
           });
         } else {
-          // Unknown binary file - encode as base64 resource
           const base64 = Buffer.from(fileData).toString("base64");
           newAttachments.push({
             name: fileName,
@@ -376,7 +558,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
           });
         }
 
-        logger.ui(`Attached file: ${fileName} (${isImage ? "image" : "text"}, ${fileStat.size} bytes)`);
+        logger.ui(
+          `Attached file: ${fileName} (${isImage ? "image" : "text"}, ${fileStat.size} bytes)`,
+        );
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Unknown error";
         errors.push(`${path.basename(uri.fsPath)}: ${msg}`);
@@ -384,8 +568,17 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    this.pendingAttachments.push(...newAttachments);
-    this.sendAttachmentsUpdate(errors.length > 0 ? errors.join("; ") : undefined);
+    // Store on the original target request, not whatever is active now
+    const atts = this.requestAttachments.get(targetRequestId) || [];
+    atts.push(...newAttachments);
+    this.requestAttachments.set(targetRequestId, atts);
+
+    // Only update UI if the target request is still the active tab
+    if (this.activeRequestId === targetRequestId) {
+      this.sendAttachmentsUpdate(
+        errors.length > 0 ? errors.join("; ") : undefined,
+      );
+    }
   }
 
   /**
@@ -405,18 +598,25 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
     const newAttachments: Attachment[] = [];
 
     for (const file of droppedFiles) {
-      if (newAttachments.length + this.pendingAttachments.length >= MAX_ATTACHMENTS) {
+      const curAtts = this.activeRequestId
+        ? this.requestAttachments.get(this.activeRequestId) || []
+        : [];
+      if (newAttachments.length + curAtts.length >= MAX_ATTACHMENTS) {
         errors.push(`Reached maximum of ${MAX_ATTACHMENTS} attachments`);
         break;
       }
 
       // Size limits
       if (file.isImage && file.size > MAX_IMAGE_SIZE) {
-        errors.push(`${file.name}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`);
+        errors.push(
+          `${file.name}: too large (max ${MAX_IMAGE_SIZE / 1024 / 1024}MB for images)`,
+        );
         continue;
       }
       if (!file.isImage && file.size > MAX_TEXT_SIZE) {
-        errors.push(`${file.name}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`);
+        errors.push(
+          `${file.name}: too large (max ${MAX_TEXT_SIZE / 1024 / 1024}MB for text files)`,
+        );
         continue;
       }
 
@@ -428,21 +628,34 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         size: file.size,
       });
 
-      logger.ui(`Dropped/pasted file: ${file.name} (${file.isImage ? "image" : "text"}, ${file.size} bytes)`);
+      logger.ui(
+        `Dropped/pasted file: ${file.name} (${file.isImage ? "image" : "text"}, ${file.size} bytes)`,
+      );
     }
 
-    this.pendingAttachments.push(...newAttachments);
-    this.sendAttachmentsUpdate(errors.length > 0 ? errors.join("; ") : undefined);
+    if (this.activeRequestId) {
+      const atts = this.requestAttachments.get(this.activeRequestId) || [];
+      atts.push(...newAttachments);
+      this.requestAttachments.set(this.activeRequestId, atts);
+    }
+    this.sendAttachmentsUpdate(
+      errors.length > 0 ? errors.join("; ") : undefined,
+    );
   }
 
   /**
-   * Send current attachments state to webview
+   * Send current attachments state to webview for a specific request
    * Only sends data needed for display (image base64 for thumbnails, no text file content)
+   * @param requestId - The request to send attachments for (defaults to activeRequestId)
+   * @param error - Optional error message to display
    */
-  private sendAttachmentsUpdate(error?: string): void {
+  private sendAttachmentsUpdate(error?: string, requestId?: string): void {
     if (this._view) {
+      const targetId = requestId || this.activeRequestId;
+      if (!targetId) return;
+      const currentAtts = this.requestAttachments.get(targetId) || [];
       // Send lightweight version for webview display
-      const displayAttachments = this.pendingAttachments.map((att) => ({
+      const displayAttachments = currentAtts.map((att) => ({
         name: att.name,
         mimeType: att.mimeType,
         data: att.isImage ? att.data : "", // Only send data for images (thumbnails)
@@ -452,6 +665,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
       this._view.webview.postMessage({
         type: "filesAttached",
+        requestId: targetId,
         attachments: displayAttachments,
         attachError: error,
       } as ExtensionToWebviewMessage);
@@ -522,24 +736,125 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Show a new request in the webview
+   * Show a new request in the webview (adds as a tab)
    */
   public showRequest(request: ToolRequest): void {
     logger.request(request.id, "Showing in UI", {
       type: request.type,
       title: request.title,
     });
-    this.currentRequest = request;
-    this.pendingAttachments = []; // Clear attachments for new request
 
-    // Start countdown using server's end time for synchronization
-    this.startCountdown(request.serverEndTime);
+    // Pre-render markdown
+    const messageHtml = renderMarkdown(request.message);
 
-    // Show the view
+    // Add to active requests
+    this.activeRequests.set(request.id, { request, messageHtml });
+    this.requestAttachments.set(request.id, []);
+    this.tabCounter++;
+    this.tabNumbers.set(request.id, this.tabCounter);
+
+    // Auto-switch to new request if no active request currently
+    const shouldActivate = this.activeRequestId === null;
+    if (shouldActivate) {
+      this.activeRequestId = request.id;
+    }
+
+    // Show the view and send request data
     if (this._view) {
       this._view.show?.(true);
-      this.sendRequest(request);
+      this.sendRequest(request, messageHtml, shouldActivate);
       this.playNotificationSound();
+    }
+  }
+
+  /**
+   * Remove a specific request and its tab
+   */
+  private removeRequest(requestId: string): void {
+    this.activeRequests.delete(requestId);
+    this.requestAttachments.delete(requestId);
+    this.tabNumbers.delete(requestId);
+    this.formValues.delete(requestId);
+
+    // If this was the active request, switch to the next one
+    if (this.activeRequestId === requestId) {
+      const remaining = Array.from(this.activeRequests.keys());
+      this.activeRequestId = remaining.length > 0 ? remaining[0] : null;
+    }
+
+    // Tell webview
+    if (this._view) {
+      this._view.webview.postMessage({
+        type: "clearRequest",
+        requestId,
+      } as ExtensionToWebviewMessage);
+    }
+  }
+
+  /**
+   * Get auto-submit value for a request that is about to time out.
+   * Returns null if auto-submit is disabled or no suitable value can be determined.
+   *
+   * Priority:
+   * 1. Custom text typed by user → use it
+   * 2. Attachments present (no custom text) → return "" (attachments-only response)
+   * 3. No custom text, no attachments → use default ("Yes" for confirm, first button for buttons)
+   * 4. For text input with no typed text and no attachments → null (skip auto-submit)
+   */
+  private getAutoSubmitValue(
+    requestId: string,
+    request: ToolRequest,
+  ): string | null {
+    const config = vscode.workspace.getConfiguration("humanInTheLoop");
+    const autoSubmit = config.get<boolean>("autoSubmitOnTimeout", false);
+    if (!autoSubmit) {
+      return null;
+    }
+
+    // Check if webview has reported a form value for this request
+    const storedValue = this.formValues.get(requestId);
+    if (storedValue && storedValue.trim()) {
+      logger.request(requestId, "Auto-submit using stored form value", {
+        valueLength: storedValue.trim().length,
+      });
+      return storedValue.trim();
+    }
+
+    // If user attached files, send empty value — attachments speak for themselves
+    const hasAttachments =
+      (this.requestAttachments.get(requestId) || []).length > 0;
+    if (hasAttachments) {
+      logger.request(
+        requestId,
+        "Auto-submit with attachments only (no custom text)",
+      );
+      return "";
+    }
+
+    // Use default values based on request type (no custom text, no attachments)
+    switch (request.type) {
+      case "ask_user_text":
+        // No default for text input — user must type something
+        return null;
+
+      case "ask_user_confirm":
+        // Default confirmation is "Yes"
+        logger.request(requestId, "Auto-submit default: Yes (confirm)");
+        return "Yes";
+
+      case "ask_user_buttons":
+        // Default to first button option
+        if ("options" in request && request.options.length > 0) {
+          const defaultValue = request.options[0].value;
+          logger.request(requestId, "Auto-submit default: first button", {
+            value: defaultValue,
+          });
+          return defaultValue;
+        }
+        return null;
+
+      default:
+        return null;
     }
   }
 
@@ -588,101 +903,42 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Send request to webview
+   * Send request to webview (adds tab + optionally activates it)
    */
-  private sendRequest(request: ToolRequest): void {
+  private sendRequest(
+    request: ToolRequest,
+    messageHtml: string,
+    isActive: boolean,
+  ): void {
     if (this._view) {
-      // Pre-render markdown on extension side for security
-      const messageHtml = renderMarkdown(request.message);
-
-      // Calculate initial remaining time from server's end time
-      const serverEndTime = request.serverEndTime || 0;
+      // Use live endTime from server (accounts for pause/resume)
+      const serverEndTime = this.mcpServer.getRequestEndTime(request.id);
+      const isPaused = this.mcpServer.isRequestPaused(request.id);
       const initialCountdown =
         serverEndTime > 0
           ? Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000))
           : 0;
+
+      // Get original total timeout from pending request (for progress bar)
+      const pendingReq = this.mcpServer.getPendingRequest(request.id);
+      const totalTimeoutSec = pendingReq
+        ? Math.ceil(pendingReq.totalTimeout / 1000)
+        : initialCountdown;
+
+      const tabNumber = this.tabNumbers.get(request.id) || 0;
 
       const message: ExtensionToWebviewMessage = {
         type: "newRequest",
         request,
         messageHtml,
         countdown: initialCountdown,
-        serverEndTime: serverEndTime,
+        serverEndTime: serverEndTime > 0 ? serverEndTime : 0,
+        totalTimeout: totalTimeoutSec,
+        isActive,
+        tabNumber,
+        isPaused,
       };
       this._view.webview.postMessage(message);
-    }
-  }
-
-  /**
-   * Clear the current request
-   */
-  private clearRequest(): void {
-    this.currentRequest = null;
-    this.pendingAttachments = [];
-    this.stopCountdown();
-
-    if (this._view) {
-      const message: ExtensionToWebviewMessage = {
-        type: "clearRequest",
-      };
-      this._view.webview.postMessage(message);
-    }
-  }
-
-  /**
-   * Start countdown timer synchronized with server's end time
-   * @param serverEndTime - Absolute timestamp when server timeout will occur (0 = infinite)
-   */
-  private startCountdown(serverEndTime?: number): void {
-    this.stopCountdown();
-    this.isPaused = false; // Reset pause state on new request
-
-    // If no serverEndTime or it's 0, don't run countdown (infinite timeout)
-    if (!serverEndTime || serverEndTime === 0) {
-      return;
-    }
-
-    // Calculate initial remaining time based on server's absolute end time
-    const calculateRemaining = (): number => {
-      return Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000));
-    };
-
-    this.currentCountdown = calculateRemaining();
-
-    // If already expired, don't start
-    if (this.currentCountdown <= 0) {
-      return;
-    }
-
-    this.countdownInterval = setInterval(() => {
-      // Skip countdown decrement if paused
-      if (this.isPaused) {
-        return;
-      }
-
-      // Recalculate from server end time to stay synchronized
-      this.currentCountdown = calculateRemaining();
-
-      if (this.currentCountdown <= 0) {
-        this.stopCountdown();
-        this.clearRequest();
-      } else if (this._view) {
-        const message: ExtensionToWebviewMessage = {
-          type: "updateCountdown",
-          countdown: this.currentCountdown,
-        };
-        this._view.webview.postMessage(message);
-      }
-    }, 1000);
-  }
-
-  /**
-   * Stop countdown timer
-   */
-  private stopCountdown(): void {
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
-      this.countdownInterval = null;
     }
   }
 
@@ -714,7 +970,6 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
    * Dispose resources when extension is deactivated
    */
   public dispose(): void {
-    this.stopCountdown();
     this.clearAllCancellationRetryTimers();
     this.disposables.forEach((d) => d.dispose());
     this.disposables = [];
@@ -788,14 +1043,12 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         .sticky-timer {
             position: sticky;
             top: 0;
-            z-index: 100;
+            z-index: 1000;
             background-color: var(--vscode-editor-background);
-            padding: 8px 0;
+            padding: 6px 0 0 0;
             margin: 0 calc(-1 * var(--container-padding));
             padding-left: var(--container-padding);
             padding-right: var(--container-padding);
-            border-bottom: 1px solid var(--vscode-widget-border);
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
         }
 
         .server-info {
@@ -807,12 +1060,22 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 14px;
-            font-weight: bold;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 4px;
         }
 
         .countdown-timer {
-            color: var(--vscode-charts-yellow);
+            color: var(--vscode-descriptionForeground);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .countdown-percent {
+            font-size: 11px;
+            font-weight: normal;
+            color: var(--vscode-descriptionForeground);
+            opacity: 0.6;
+            font-variant-numeric: tabular-nums;
         }
 
         .countdown-timer.warning {
@@ -826,6 +1089,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
         .countdown-timer.paused {
             color: var(--vscode-descriptionForeground);
+            opacity: 0.5;
             animation: none;
         }
 
@@ -845,20 +1109,33 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
         .progress-bar {
             width: 100%;
-            height: 4px;
-            background-color: var(--vscode-progressBar-background);
+            height: 3px;
+            background-color: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
             border-radius: 2px;
             overflow: hidden;
         }
 
         .progress-fill {
             height: 100%;
-            background-color: var(--vscode-progressBar-background);
-            transition: width 1s linear;
+            border-radius: 2px;
+            background-color: var(--vscode-descriptionForeground);
+            transition: width 0.5s linear;
+            opacity: 0.5;
+        }
+
+        .progress-fill.warning {
+            background-color: var(--vscode-charts-orange);
+            opacity: 0.7;
+        }
+
+        .progress-fill.critical {
+            background-color: var(--vscode-errorForeground);
+            opacity: 0.85;
         }
 
         .progress-fill.paused {
-            background-color: var(--vscode-descriptionForeground) !important;
+            background-color: var(--vscode-descriptionForeground);
+            opacity: 0.25;
         }
 
         .request-container {
@@ -1369,6 +1646,98 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         .request-container.drag-over .drop-hint {
             display: block;
         }
+
+        /* === Tab bar for multiple concurrent requests === */
+        .tab-bar {
+            display: none; /* hidden when 0-1 requests */
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+            border-bottom: 1px solid var(--vscode-widget-border);
+            padding: 0;
+            gap: 0;
+            scrollbar-width: thin;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .tab-bar.visible {
+            display: flex;
+        }
+
+        .tab-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            border: none;
+            border-bottom: 2px solid transparent;
+            background: transparent;
+            color: var(--vscode-descriptionForeground);
+            transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+            flex-shrink: 0;
+            position: relative;
+        }
+
+        .tab-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+            color: var(--vscode-foreground);
+        }
+
+        .tab-item.active {
+            color: var(--vscode-foreground);
+            border-bottom-color: var(--vscode-focusBorder);
+            font-weight: 600;
+        }
+
+        .tab-item.has-new {
+            animation: tab-pulse 2s ease-in-out 3;
+        }
+
+        @keyframes tab-pulse {
+            0%, 100% { background-color: transparent; }
+            50% { background-color: var(--vscode-editor-selectionBackground); }
+        }
+
+        .tab-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 120px;
+        }
+
+        .tab-timer {
+            font-size: 10px;
+            font-variant-numeric: tabular-nums;
+            opacity: 0.8;
+        }
+
+        .tab-timer.warning {
+            color: var(--vscode-charts-orange);
+        }
+
+        .tab-timer.critical {
+            color: var(--vscode-errorForeground);
+        }
+
+        .tab-timer.paused {
+            color: var(--vscode-descriptionForeground);
+            font-style: italic;
+        }
+
+        .tab-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--vscode-notificationsInfoIcon-foreground);
+            position: absolute;
+            top: 4px;
+            right: 4px;
+        }
     </style>
 </head>
 <body>
@@ -1381,10 +1750,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             </div>
         </div>
         
+        <div class="tab-bar" id="tabBar" role="tablist" aria-label="Pending requests"></div>
+
         <div class="sticky-timer" id="stickyTimer" style="display: none;">
             <div class="countdown" id="countdownContainer">
                 <span>⏱️</span>
                 <span class="countdown-timer" id="countdownTimer" role="timer" aria-label="Time remaining" aria-live="polite">120s</span>
+                <span class="countdown-percent" id="countdownPercent"></span>
                 <button id="pauseBtn" class="icon-btn pause-btn" title="Pause timer" aria-label="Pause timer">⏸️</button>
             </div>
             <div class="progress-bar" id="progressBar">
@@ -1463,9 +1835,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             
             // Elements
             const serverInfo = document.getElementById('serverInfo');
+            const tabBar = document.getElementById('tabBar');
             const stickyTimer = document.getElementById('stickyTimer');
             const countdownContainer = document.getElementById('countdownContainer');
             const countdownTimer = document.getElementById('countdownTimer');
+            const countdownPercent = document.getElementById('countdownPercent');
             const pauseBtn = document.getElementById('pauseBtn');
             const progressBar = document.getElementById('progressBar');
             const progressFill = document.getElementById('progressFill');
@@ -1498,14 +1872,11 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const attachError = document.getElementById('attachError');
             const attachSection = document.getElementById('attachSection');
 
-            let currentRequestId = null;
-            let totalTimeout = 120;
-            let currentRequestType = null;
-            let currentMessageText = ''; // Store original message text for copying
-            let isPaused = false; // Timer pause state
-            let serverEndTime = 0; // Absolute timestamp when server timeout will occur
-            let localCountdownInterval = null; // Local countdown timer
-            let currentAttachments = []; // Current file attachments
+            // === MULTI-REQUEST STATE ===
+            // Map of all pending requests: requestId → { request, messageHtml, serverEndTime, isPaused, tabNumber, attachments }
+            const pendingRequests = new Map();
+            let activeRequestId = null; // Currently displayed tab
+            let currentAttachments = []; // Attachments display for active tab
             
             // Form state preservation - stores input values by requestId
             let savedFormValues = {};
@@ -1516,6 +1887,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 soundVolume: 0.5,
                 soundType: 'default'
             };
+
+            // Tab countdown update interval (updates all tab timers)
+            let tabTimerInterval = null;
 
             // Audio context for sound playback - shared instance
             let audioContext = null;
@@ -1685,16 +2059,33 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             }
 
             // Get current input value based on request type
+            // Priority: custom text > attachments-only ("") > default (Yes / first button)
             function getCurrentInputValue() {
-                switch (currentRequestType) {
+                const reqData = activeRequestId ? pendingRequests.get(activeRequestId) : null;
+                if (!reqData) return null;
+                const hasAttachments = currentAttachments.length > 0;
+                switch (reqData.request.type) {
                     case 'ask_user_text':
-                        return textInput.value.trim();
+                        if (textInput.value.trim()) return textInput.value.trim();
+                        // If attachments present, send empty (attachments-only)
+                        return hasAttachments ? '' : null;
                     case 'ask_user_confirm':
-                        const customConfirm = confirmCustomText.value.trim();
-                        return customConfirm || null;
+                        // Use custom text if typed
+                        if (confirmCustomText.value.trim()) return confirmCustomText.value.trim();
+                        // Attachments-only: empty value
+                        if (hasAttachments) return '';
+                        // Default: "Yes"
+                        return 'Yes';
                     case 'ask_user_buttons':
-                        const customBtn = buttonsCustomText.value.trim();
-                        return customBtn || null;
+                        // Use custom text if typed
+                        if (buttonsCustomText.value.trim()) return buttonsCustomText.value.trim();
+                        // Attachments-only: empty value
+                        if (hasAttachments) return '';
+                        // Default: first button option
+                        if (reqData.request.options && reqData.request.options.length > 0) {
+                            return reqData.request.options[0].value;
+                        }
+                        return null;
                     default:
                         return null;
                 }
@@ -1702,74 +2093,178 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
             // Auto-submit on timeout
             function handleAutoSubmit() {
-                if (!settings.autoSubmitOnTimeout || !currentRequestId) {
-                    return;
-                }
-                
+                if (!settings.autoSubmitOnTimeout || !activeRequestId) return;
+                // Defense-in-depth: never auto-submit while paused
+                const reqData = pendingRequests.get(activeRequestId);
+                if (!reqData || reqData.isPaused) return;
                 const value = getCurrentInputValue();
-                if (value !== null && value !== '') {
+                // Allow empty value when there are attachments (attachments-only response)
+                if (value !== null && (value !== '' || currentAttachments.length > 0)) {
                     sendResponse(value);
                 }
             }
 
-            // NOTE: Markdown rendering is now done on extension side using marked.js + DOMPurify
-            // for better security and full markdown support. See markdownRenderer.ts
+            // NOTE: Markdown rendering is done on extension side using markdown-it (html disabled)
 
-            // Stop local countdown timer
-            function stopLocalCountdown() {
-                if (localCountdownInterval) {
-                    clearInterval(localCountdownInterval);
-                    localCountdownInterval = null;
-                }
+            // === TAB MANAGEMENT ===
+
+            // Get remaining seconds for a request
+            function getRemainingSeconds(reqData) {
+                if (!reqData.serverEndTime || reqData.serverEndTime <= 0) return -1; // infinite
+                if (reqData.isPaused) return reqData.pausedRemaining || 0;
+                return Math.max(0, Math.ceil((reqData.serverEndTime - Date.now()) / 1000));
             }
 
-            // Start local countdown timer synchronized with server
-            function startLocalCountdown() {
-                stopLocalCountdown();
-                
-                if (serverEndTime <= 0) {
-                    return; // Infinite timeout, no countdown
+            // Format seconds as mm:ss or just seconds
+            function formatTime(seconds) {
+                if (seconds < 0) return '∞';
+                if (seconds >= 60) {
+                    const mins = Math.floor(seconds / 60);
+                    const secs = seconds % 60;
+                    return mins + ':' + (secs < 10 ? '0' : '') + secs;
+                }
+                return seconds + 's';
+            }
+
+            // Render tab bar
+            function renderTabs() {
+                tabBar.innerHTML = '';
+                const count = pendingRequests.size;
+
+                // Only show tab bar when 2+ requests
+                if (count <= 1) {
+                    tabBar.classList.remove('visible');
+                    return;
                 }
 
-                // Update immediately
-                const updateFromServerTime = () => {
-                    if (isPaused) return;
-                    
-                    const remaining = Math.max(0, Math.ceil((serverEndTime - Date.now()) / 1000));
-                    updateCountdown(remaining);
-                    
-                    if (remaining <= 0) {
-                        stopLocalCountdown();
+                tabBar.classList.add('visible');
+
+                for (const [reqId, reqData] of pendingRequests) {
+                    const tab = document.createElement('div');
+                    tab.className = 'tab-item' + (reqId === activeRequestId ? ' active' : '');
+                    tab.setAttribute('role', 'tab');
+                    tab.setAttribute('aria-selected', reqId === activeRequestId ? 'true' : 'false');
+                    tab.dataset.requestId = reqId;
+
+                    // Tab label: #N: title (truncated)
+                    const label = document.createElement('span');
+                    label.className = 'tab-label';
+                    const titleText = reqData.request.title || 'Request';
+                    label.textContent = '#' + reqData.tabNumber + ': ' + (titleText.length > 18 ? titleText.substring(0, 18) + '…' : titleText);
+                    label.title = titleText;
+                    tab.appendChild(label);
+
+                    // Tab timer
+                    const timer = document.createElement('span');
+                    timer.className = 'tab-timer';
+                    const remaining = getRemainingSeconds(reqData);
+                    if (reqData.isPaused) {
+                        timer.textContent = '⏸';
+                        timer.classList.add('paused');
+                    } else if (remaining >= 0) {
+                        timer.textContent = formatTime(remaining);
+                        const total = reqData.totalTimeout || remaining || 1;
+                        const tabPct = Math.max(0, Math.min(100, (remaining / total) * 100));
+                        if (tabPct <= 8) timer.classList.add('critical');
+                        else if (tabPct <= 20) timer.classList.add('warning');
                     }
-                };
+                    tab.appendChild(timer);
 
-                updateFromServerTime();
-                localCountdownInterval = setInterval(updateFromServerTime, 500); // Update 2x per second for accuracy
+                    // Click handler
+                    tab.addEventListener('click', () => switchToTab(reqId));
+
+                    tabBar.appendChild(tab);
+                }
             }
 
-            // Show request
-            function showRequest(request, countdown, messageHtml, endTime) {
-                // Check if this is the same request (e.g., when returning to webview)
-                const isSameRequest = currentRequestId === request.id;
-                const savedValues = savedFormValues[request.id] || {};
-                
-                currentRequestId = request.id;
-                currentRequestType = request.type;
-                totalTimeout = countdown;
-                serverEndTime = endTime || 0; // Store server's absolute end time
-                currentMessageText = request.message; // Store for copy function
+            // Update tab timers without full re-render
+            function updateTabTimers() {
+                const tabs = tabBar.querySelectorAll('.tab-item');
+                tabs.forEach(tab => {
+                    const reqId = tab.dataset.requestId;
+                    const reqData = pendingRequests.get(reqId);
+                    if (!reqData) return;
+                    const timer = tab.querySelector('.tab-timer');
+                    if (!timer) return;
+                    const remaining = getRemainingSeconds(reqData);
+                    timer.className = 'tab-timer';
+                    if (reqData.isPaused) {
+                        timer.textContent = '⏸';
+                        timer.classList.add('paused');
+                    } else if (remaining >= 0) {
+                        timer.textContent = formatTime(remaining);
+                        const total = reqData.totalTimeout || remaining || 1;
+                        const tabPct = Math.max(0, Math.min(100, (remaining / total) * 100));
+                        if (tabPct <= 8) timer.classList.add('critical');
+                        else if (tabPct <= 20) timer.classList.add('warning');
+                    } else {
+                        timer.textContent = '';
+                    }
+                });
 
-                // Clear attachments for new requests
-                if (!isSameRequest) {
-                    currentAttachments = [];
-                    renderAttachments();
+                // Also update the main sticky timer for active request
+                updateActiveTimer();
+            }
+
+            // Switch to a different tab
+            function switchToTab(requestId) {
+                if (!pendingRequests.has(requestId)) return;
+                if (activeRequestId === requestId) return;
+
+                // Save current form state before switching
+                saveCurrentFormState();
+
+                activeRequestId = requestId;
+                const reqData = pendingRequests.get(requestId);
+
+                // Notify extension (for attachment management)
+                vscode.postMessage({ type: 'switchTab', requestId });
+
+                // Display this request
+                displayRequest(reqData);
+                renderTabs();
+            }
+
+            // Save current form values
+            function saveCurrentFormState() {
+                if (!activeRequestId) return;
+                const reqData = pendingRequests.get(activeRequestId);
+                if (!reqData) return;
+                const values = {};
+                switch (reqData.request.type) {
+                    case 'ask_user_text':
+                        values.textInput = textInput.value;
+                        break;
+                    case 'ask_user_confirm':
+                        values.confirmCustomText = confirmCustomText.value;
+                        values.confirmCustomInputVisible = confirmCustomInput.style.display !== 'none';
+                        break;
+                    case 'ask_user_buttons':
+                        values.buttonsCustomText = buttonsCustomText.value;
+                        values.buttonsCustomInputVisible = buttonsCustomInput.style.display !== 'none';
+                        break;
                 }
+                savedFormValues[activeRequestId] = values;
+            }
+
+            // Display a specific request in the main content area
+            function displayRequest(reqData) {
+                const request = reqData.request;
+                const savedValues = savedFormValues[request.id] || {};
+
+                // Reset input states (may have been disabled by cancellation banner)
+                [textInput, confirmCustomText, buttonsCustomText].forEach(el => {
+                    el.disabled = false;
+                    el.style.opacity = '1';
+                });
 
                 requestTitle.textContent = request.title;
-                // Use pre-rendered HTML from extension (marked + DOMPurify)
-                requestMessage.innerHTML = messageHtml || request.message;
+                // Remove any existing cancelled banner
+                const oldBanner = requestMessage.querySelector('.cancelled-banner');
+                if (oldBanner) oldBanner.remove();
+                requestMessage.innerHTML = reqData.messageHtml || request.message;
 
-                // Hide all input types and custom inputs
+                // Hide all input types
                 textInputContainer.style.display = 'none';
                 confirmContainer.style.display = 'none';
                 confirmCustomInput.style.display = 'none';
@@ -1778,32 +2273,24 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 buttonsCustomToggle.style.display = 'none';
                 buttonsContainer.innerHTML = '';
 
-                // Show appropriate input - restore saved values if returning to same request
                 switch (request.type) {
                     case 'ask_user_text':
                         textInputContainer.style.display = 'flex';
                         textInput.placeholder = request.placeholder || 'Enter your response...';
-                        // Restore saved value or clear for new request
                         textInput.value = savedValues.textInput || '';
                         textInput.focus();
                         break;
-
                     case 'ask_user_confirm':
                         confirmContainer.style.display = 'flex';
-                        // Restore saved custom text if any
                         confirmCustomText.value = savedValues.confirmCustomText || '';
-                        // Restore custom input visibility
                         if (savedValues.confirmCustomInputVisible) {
                             confirmCustomInput.style.display = 'flex';
                         }
                         break;
-
                     case 'ask_user_buttons':
                         buttonsContainer.style.display = 'flex';
                         buttonsCustomToggle.style.display = 'block';
-                        // Restore saved custom text if any
                         buttonsCustomText.value = savedValues.buttonsCustomText || '';
-                        // Restore custom input visibility
                         if (savedValues.buttonsCustomInputVisible) {
                             buttonsCustomInput.style.display = 'flex';
                         }
@@ -1819,152 +2306,191 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 // Show request container
                 requestContainer.classList.add('visible');
                 emptyState.style.display = 'none';
-                
-                // Show/hide sticky timer for countdown (hide for infinite timeout)
-                if (serverEndTime > 0) {
-                    stickyTimer.style.display = 'block';
-                    startLocalCountdown(); // Use local timer synced with server
-                } else {
-                    // Infinite timeout - hide timer UI
+
+                // Update sticky timer for this request
+                updateActiveTimer();
+
+                // Update attachments display
+                currentAttachments = reqData.attachments || [];
+                renderAttachments();
+            }
+
+            // Update the sticky timer for the active request
+            function updateActiveTimer() {
+                const reqData = activeRequestId ? pendingRequests.get(activeRequestId) : null;
+                if (!reqData) {
                     stickyTimer.style.display = 'none';
-                    stopLocalCountdown();
+                    return;
                 }
-            }
 
-            // Format seconds as mm:ss or just seconds
-            function formatTime(seconds) {
-                if (seconds >= 60) {
-                    const mins = Math.floor(seconds / 60);
-                    const secs = seconds % 60;
-                    return mins + ':' + (secs < 10 ? '0' : '') + secs;
+                const remaining = getRemainingSeconds(reqData);
+                const isPaused = reqData.isPaused;
+
+                if (remaining < 0) {
+                    // Infinite timeout
+                    stickyTimer.style.display = 'none';
+                    return;
                 }
-                return seconds + 's';
-            }
 
-            // Update countdown
-            function updateCountdown(seconds) {
-                countdownTimer.textContent = formatTime(seconds);
-                
-                // Check for auto-submit when countdown reaches 1
-                if (seconds <= 1 && settings.autoSubmitOnTimeout) {
+                stickyTimer.style.display = 'block';
+                countdownTimer.textContent = formatTime(remaining);
+
+                // Auto-submit check (with margin for IPC latency)
+                // Never auto-submit while paused
+                if (remaining <= 3 && settings.autoSubmitOnTimeout && !isPaused) {
                     handleAutoSubmit();
                 }
-                
-                // Update styling based on time left
-                countdownTimer.classList.remove('warning', 'critical');
-                if (seconds <= 10) {
-                    countdownTimer.classList.add('critical');
-                } else if (seconds <= 30) {
-                    countdownTimer.classList.add('warning');
-                }
 
-                // Update progress bar
-                const percentage = (seconds / totalTimeout) * 100;
-                progressFill.style.width = percentage + '%';
-                
-                // Change color based on time
-                if (seconds <= 10) {
-                    progressFill.style.backgroundColor = 'var(--vscode-errorForeground)';
-                } else if (seconds <= 30) {
-                    progressFill.style.backgroundColor = 'var(--vscode-charts-orange)';
-                } else {
-                    progressFill.style.backgroundColor = 'var(--vscode-progressBar-background)';
-                }
-            }
+                // Compute percentage
+                const totalTimeout = reqData.totalTimeout || remaining || 1;
+                const pct = Math.max(0, Math.min(100, (remaining / totalTimeout) * 100));
 
-            // Clear request
-            function clearRequest() {
-                // Clear saved form values for this request
-                if (currentRequestId) {
-                    delete savedFormValues[currentRequestId];
-                }
-                currentRequestId = null;
-                currentAttachments = [];
-                renderAttachments();
-                requestContainer.classList.remove('visible');
-                emptyState.style.display = 'flex';
-                stickyTimer.style.display = 'none';
-            }
+                // Show percentage
+                countdownPercent.textContent = '(' + Math.round(pct) + '%)';
 
-            // Show request cancelled state
-            function showRequestCancelled(reason) {
-                // Stop accepting responses
-                currentRequestId = null;
-                
-                // Hide countdown and progress
-                stickyTimer.style.display = 'none';
-                
-                // Update title to show cancelled status
-                requestTitle.innerHTML = '🚫 ' + requestTitle.textContent;
-                
-                // Disable all input elements
-                const inputs = requestContainer.querySelectorAll('input, textarea, button');
-                inputs.forEach(input => {
-                    input.disabled = true;
-                    input.style.opacity = '0.5';
-                });
-                
-                // Add cancelled banner at top of message
-                const banner = document.createElement('div');
-                banner.className = 'cancelled-banner';
-                banner.innerHTML = '<strong>⚠️ Request Cancelled</strong><br>' + (reason || 'The agent is no longer waiting for a response.');
-                requestMessage.insertBefore(banner, requestMessage.firstChild);
-                
-                // Auto-clear after 5 seconds
-                setTimeout(() => {
-                    clearRequest();
-                    // Re-enable inputs for future requests
-                    const allInputs = requestContainer.querySelectorAll('input, textarea, button');
-                    allInputs.forEach(input => {
-                        input.disabled = false;
-                        input.style.opacity = '1';
-                    });
-                }, 5000);
-            }
+                // Timer text styling
+                countdownTimer.classList.remove('warning', 'critical', 'paused');
+                progressFill.classList.remove('warning', 'critical', 'paused');
 
-            // Send response
-            function sendResponse(value) {
-                if (currentRequestId) {
-                    // Clear saved form values after successful send
-                    delete savedFormValues[currentRequestId];
-                    
-                    // Attachments are stored on extension side, no need to send them back
-                    vscode.postMessage({
-                        type: 'response',
-                        requestId: currentRequestId,
-                        value: value
-                    });
-                    currentAttachments = [];
-                    renderAttachments();
-                }
-            }
-
-            // Update pause button appearance
-            function updatePauseButton() {
                 if (isPaused) {
-                    pauseBtn.textContent = '▶️';
-                    pauseBtn.title = 'Resume timer';
-                    pauseBtn.setAttribute('aria-label', 'Resume timer');
-                    pauseBtn.classList.add('paused');
                     countdownTimer.classList.add('paused');
                     progressFill.classList.add('paused');
+                    pauseBtn.textContent = '▶️';
+                    pauseBtn.title = 'Resume timer';
                 } else {
+                    if (pct <= 8) {
+                        countdownTimer.classList.add('critical');
+                        progressFill.classList.add('critical');
+                    } else if (pct <= 20) {
+                        countdownTimer.classList.add('warning');
+                        progressFill.classList.add('warning');
+                    }
                     pauseBtn.textContent = '⏸️';
                     pauseBtn.title = 'Pause timer';
-                    pauseBtn.setAttribute('aria-label', 'Pause timer');
-                    pauseBtn.classList.remove('paused');
-                    countdownTimer.classList.remove('paused');
-                    progressFill.classList.remove('paused');
                 }
+
+                // Progress bar width
+                progressFill.style.width = pct + '%';
+            }
+
+            // Add a new request (from extension newRequest message)
+            function addRequest(request, messageHtml, countdown, endTime, isActive, tabNumber, isPausedState, totalTimeoutSec) {
+                const reqData = {
+                    request,
+                    messageHtml,
+                    serverEndTime: endTime || 0,
+                    totalTimeout: totalTimeoutSec || countdown || 0,
+                    isPaused: !!isPausedState,
+                    pausedRemaining: isPausedState && endTime > 0 ? Math.max(0, Math.ceil((endTime - Date.now()) / 1000)) : null,
+                    tabNumber: tabNumber || pendingRequests.size + 1,
+                    attachments: [],
+                };
+                pendingRequests.set(request.id, reqData);
+
+                if (isActive || !activeRequestId) {
+                    activeRequestId = request.id;
+                    displayRequest(reqData);
+                }
+
+                renderTabs();
+                startTabTimerIfNeeded();
+            }
+
+            // Remove a request (tab closed / answered / cancelled)
+            function removeRequest(requestId) {
+                delete savedFormValues[requestId];
+                pendingRequests.delete(requestId);
+
+                if (activeRequestId === requestId) {
+                    // Switch to next available tab
+                    const remaining = Array.from(pendingRequests.keys());
+                    if (remaining.length > 0) {
+                        activeRequestId = remaining[0];
+                        displayRequest(pendingRequests.get(activeRequestId));
+                    } else {
+                        activeRequestId = null;
+                        currentAttachments = [];
+                        renderAttachments();
+                        requestContainer.classList.remove('visible');
+                        emptyState.style.display = 'flex';
+                        stickyTimer.style.display = 'none';
+                    }
+                }
+
+                renderTabs();
+                if (pendingRequests.size === 0) {
+                    stopTabTimer();
+                }
+            }
+
+            // Show cancelled state for a specific request
+            function showRequestCancelled(requestId, reason) {
+                const reqData = pendingRequests.get(requestId);
+                if (!reqData) return;
+
+                // Mark as cancelled in the tab
+                reqData.cancelled = true;
+
+                // If this is the active request, show cancel banner
+                if (activeRequestId === requestId) {
+                    requestTitle.innerHTML = '🚫 ' + requestTitle.textContent;
+                    const inputs = requestContainer.querySelectorAll('input, textarea, button');
+                    inputs.forEach(input => { input.disabled = true; input.style.opacity = '0.5'; });
+
+                    const banner = document.createElement('div');
+                    banner.className = 'cancelled-banner';
+                    banner.innerHTML = '<strong>⚠️ Request Cancelled</strong><br>' + (reason || 'The agent is no longer waiting for a response.');
+                    requestMessage.insertBefore(banner, requestMessage.firstChild);
+
+                    // Re-enable inputs and remove after delay (extension handles removal via clearRequest)
+                    setTimeout(() => {
+                        const allInputs = requestContainer.querySelectorAll('input, textarea, button');
+                        allInputs.forEach(input => { input.disabled = false; input.style.opacity = '1'; });
+                    }, 5000);
+                }
+            }
+
+            // Start interval to update tab timers
+            function startTabTimerIfNeeded() {
+                if (tabTimerInterval) return;
+                tabTimerInterval = setInterval(() => {
+                    updateTabTimers();
+                }, 500);
+            }
+
+            function stopTabTimer() {
+                if (tabTimerInterval) {
+                    clearInterval(tabTimerInterval);
+                    tabTimerInterval = null;
+                }
+            }
+
+            // Send response for active request
+            function sendResponse(value) {
+                if (!activeRequestId) return;
+                const reqData = pendingRequests.get(activeRequestId);
+                if (!reqData || reqData.responded) return; // Prevent double-send
+                reqData.responded = true;
+                delete savedFormValues[activeRequestId];
+                vscode.postMessage({
+                    type: 'response',
+                    requestId: activeRequestId,
+                    value: value
+                });
+                currentAttachments = [];
+                renderAttachments();
             }
 
             // Event listeners
             
-            // Pause/Resume timer button
+            // Pause/Resume timer button — now sends requestId
             pauseBtn.addEventListener('click', () => {
-                vscode.postMessage({
-                    type: 'togglePause'
-                });
+                if (activeRequestId) {
+                    vscode.postMessage({
+                        type: 'togglePause',
+                        requestId: activeRequestId
+                    });
+                }
             });
 
             // Instructions button
@@ -1984,7 +2510,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             // Copy message button
             copyMessageBtn.addEventListener('click', async () => {
                 try {
-                    await navigator.clipboard.writeText(currentMessageText);
+                    const reqData = activeRequestId ? pendingRequests.get(activeRequestId) : null;
+                    const msgText = reqData ? reqData.request.message : '';
+                    await navigator.clipboard.writeText(msgText);
                     copyMessageBtn.textContent = '✅';
                     copyMessageBtn.classList.add('copied');
                     setTimeout(() => {
@@ -2080,46 +2608,50 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             // Save form values on input to preserve state when switching tabs
             textInput.addEventListener('input', () => {
                 autoResizeTextarea(textInput);
-                if (currentRequestId) {
-                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
-                    savedFormValues[currentRequestId].textInput = textInput.value;
+                if (activeRequestId) {
+                    if (!savedFormValues[activeRequestId]) savedFormValues[activeRequestId] = {};
+                    savedFormValues[activeRequestId].textInput = textInput.value;
+                    // Report value to extension for server-side auto-submit
+                    vscode.postMessage({ type: 'formValueUpdate', requestId: activeRequestId, value: textInput.value });
                 }
             });
 
             confirmCustomText.addEventListener('input', () => {
                 autoResizeTextarea(confirmCustomText);
-                if (currentRequestId) {
-                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
-                    savedFormValues[currentRequestId].confirmCustomText = confirmCustomText.value;
+                if (activeRequestId) {
+                    if (!savedFormValues[activeRequestId]) savedFormValues[activeRequestId] = {};
+                    savedFormValues[activeRequestId].confirmCustomText = confirmCustomText.value;
+                    vscode.postMessage({ type: 'formValueUpdate', requestId: activeRequestId, value: confirmCustomText.value });
                 }
             });
 
             buttonsCustomText.addEventListener('input', () => {
                 autoResizeTextarea(buttonsCustomText);
-                if (currentRequestId) {
-                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
-                    savedFormValues[currentRequestId].buttonsCustomText = buttonsCustomText.value;
+                if (activeRequestId) {
+                    if (!savedFormValues[activeRequestId]) savedFormValues[activeRequestId] = {};
+                    savedFormValues[activeRequestId].buttonsCustomText = buttonsCustomText.value;
+                    vscode.postMessage({ type: 'formValueUpdate', requestId: activeRequestId, value: buttonsCustomText.value });
                 }
             });
 
             // Track custom input visibility state
             confirmCustomToggle.addEventListener('click', () => {
-                if (currentRequestId) {
-                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                if (activeRequestId) {
+                    if (!savedFormValues[activeRequestId]) savedFormValues[activeRequestId] = {};
                     // Store visibility state after toggle
                     setTimeout(() => {
-                        savedFormValues[currentRequestId].confirmCustomInputVisible = 
+                        savedFormValues[activeRequestId].confirmCustomInputVisible = 
                             confirmCustomInput.style.display !== 'none';
                     }, 0);
                 }
             });
 
             buttonsToggleBtn.addEventListener('click', () => {
-                if (currentRequestId) {
-                    if (!savedFormValues[currentRequestId]) savedFormValues[currentRequestId] = {};
+                if (activeRequestId) {
+                    if (!savedFormValues[activeRequestId]) savedFormValues[activeRequestId] = {};
                     // Store visibility state after toggle
                     setTimeout(() => {
-                        savedFormValues[currentRequestId].buttonsCustomInputVisible = 
+                        savedFormValues[activeRequestId].buttonsCustomInputVisible = 
                             buttonsCustomInput.style.display !== 'none';
                     }, 0);
                 }
@@ -2278,7 +2810,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 dragCounter = 0;
                 requestContainer.classList.remove('drag-over');
 
-                if (!currentRequestId) return;
+                if (!activeRequestId) return;
 
                 const files = e.dataTransfer ? e.dataTransfer.files : null;
                 if (!files || files.length === 0) return;
@@ -2300,7 +2832,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
 
             // === Clipboard Paste (images) ===
             document.addEventListener('paste', async (e) => {
-                if (!currentRequestId) return;
+                if (!activeRequestId) return;
 
                 const items = e.clipboardData ? e.clipboardData.items : [];
                 const filesToProcess = [];
@@ -2346,30 +2878,48 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 
                 switch (message.type) {
                     case 'newRequest':
-                        isPaused = false; // Reset pause state on new request
-                        updatePauseButton();
-                        showRequest(message.request, message.countdown, message.messageHtml, message.serverEndTime);
+                        addRequest(
+                            message.request,
+                            message.messageHtml,
+                            message.countdown,
+                            message.serverEndTime,
+                            message.isActive,
+                            message.tabNumber,
+                            message.isPaused,
+                            message.totalTimeout
+                        );
                         break;
 
-                    case 'updateCountdown':
-                        // Extension still sends updates, but local timer is primary
-                        // This serves as a backup/sync mechanism
-                        if (!localCountdownInterval) {
-                            updateCountdown(message.countdown);
+                    case 'clearRequest': {
+                        const clearId = message.requestId || activeRequestId;
+                        if (clearId) removeRequest(clearId);
+                        break;
+                    }
+
+                    case 'pauseState': {
+                        const reqId = message.requestId || activeRequestId;
+                        const rd = pendingRequests.get(reqId);
+                        if (rd) {
+                            if (message.isPaused) {
+                                // Calculate remaining BEFORE setting isPaused
+                                // (getRemainingSeconds checks isPaused first and would return stale pausedRemaining)
+                                rd.pausedRemaining = rd.serverEndTime > 0
+                                    ? Math.max(0, Math.ceil((rd.serverEndTime - Date.now()) / 1000))
+                                    : null;
+                            }
+                            rd.isPaused = message.isPaused;
+                            if (!message.isPaused && message.serverEndTime) {
+                                // Update server end time on resume
+                                rd.serverEndTime = message.serverEndTime;
+                                rd.pausedRemaining = null;
+                            }
+                            renderTabs();
+                            if (reqId === activeRequestId) {
+                                updateActiveTimer();
+                            }
                         }
                         break;
-
-                    case 'clearRequest':
-                        isPaused = false;
-                        updatePauseButton();
-                        stopLocalCountdown();
-                        clearRequest();
-                        break;
-
-                    case 'pauseState':
-                        isPaused = message.isPaused;
-                        updatePauseButton();
-                        break;
+                    }
 
                     case 'serverInfo':
                         if (message.configStatus === 'not-configured') {
@@ -2415,13 +2965,22 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                         break;
 
                     case 'requestCancelled':
-                        showRequestCancelled(message.reason);
+                        showRequestCancelled(message.requestId || activeRequestId, message.reason);
                         break;
 
                     case 'filesAttached':
                         if (message.attachments) {
-                            currentAttachments = message.attachments;
-                            renderAttachments();
+                            // Store attachments on the target request (or active if not specified)
+                            const targetId = message.requestId || activeRequestId;
+                            const targetReq = targetId ? pendingRequests.get(targetId) : null;
+                            if (targetReq) {
+                                targetReq.attachments = message.attachments;
+                            }
+                            // Only update the visible display if this is the active request
+                            if (targetId === activeRequestId) {
+                                currentAttachments = message.attachments;
+                                renderAttachments();
+                            }
                         }
                         if (message.attachError) {
                             attachError.textContent = message.attachError;

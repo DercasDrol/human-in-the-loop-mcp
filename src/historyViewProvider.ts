@@ -114,7 +114,8 @@ export class HistoryViewProvider {
       // Open in editor
       const doc = await vscode.workspace.openTextDocument(fileUri);
       await vscode.window.showTextDocument(doc, { preview: true });
-    } catch {
+    } catch (error) {
+      console.error('Failed to open file:', relativePath, error);
       vscode.window.showErrorMessage(`Cannot open file: ${relativePath}`);
     }
   }
@@ -142,7 +143,8 @@ export class HistoryViewProvider {
         });
         vscode.window.showInformationMessage(`File saved: ${targetUri.fsPath}`);
       }
-    } catch {
+    } catch (error) {
+      console.error('Failed to save file:', relativePath, error);
       vscode.window.showErrorMessage(`Cannot save file: ${relativePath}`);
     }
   }
@@ -377,6 +379,7 @@ export class HistoryViewProvider {
    */
   private getHtml(history: HistoryEntry[]): string {
     const nonce = getNonce();
+    const webview = this.panel!.webview;
 
     const entriesHtml =
       history.length === 0
@@ -430,7 +433,7 @@ export class HistoryViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src https: http: data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src https: http: data:;">
     <title>Request History</title>
     <style>
         body {

@@ -5,6 +5,141 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-03-07
+
+### Changed
+
+- **Progress bar visual redesign** 🎨
+  - Percentage-based color thresholds instead of hard-coded seconds — works correctly regardless of total timeout duration
+  - Normal state (>20%): muted, theme-native color (`descriptionForeground`) — non-intrusive, ambient indicator
+  - Warning state (<20%): theme orange — subtle attention shift
+  - Critical state (<8%): theme error color with gentle pulse — draws attention only when truly urgent
+  - Percentage display next to countdown timer (e.g. "1:30 (75%)") for at-a-glance status
+  - Slim 3px bar with theme-appropriate track color
+  - Tab timer colors use same percentage-based thresholds
+  - `tabular-nums` font variant for stable timer width
+
+### Fixed
+
+- **Stale comment**: "marked.js + DOMPurify" corrected to "markdown-it (html disabled)"
+- **History panel CSP**: Added missing `${webview.cspSource}` to `style-src` for consistency with main webview
+- **Error logging in history view**: `handleOpenFile` / `handleDownloadFile` catch blocks now log the actual error before showing user message
+- **Null guard on `clearRequest` handler**: `removeRequest(null)` no longer triggered when both `message.requestId` and `activeRequestId` are null
+
+## [1.4.2] - 2026-03-07
+
+### Fixed
+
+- **Auto-submit on timeout not working (critical race condition)** 🐛
+  - **Root cause**: Server-side `setTimeout` fires at the exact timeout boundary while the webview's 500ms interval + IPC latency made the webview auto-submit arrive too late — the request was already resolved as timed out
+  - **Root cause**: `getCurrentInputValue()` returned `null` for `ask_user_confirm` and `ask_user_buttons` when no custom text was typed, silently skipping auto-submit for these types
+  - **Root cause**: Auto-submit only checked the active tab — background tabs timed out without auto-submit
+  - **Fix**: Added server-side `onPreTimeout` callback — auto-submit now happens AT the exact moment of timeout, directly in the server's timeout handler, before resolving with timeout error
+  - Extension-side `getAutoSubmitValue()` provides defaults: `"Yes"` for confirm, first button option for buttons, stored form value for text
+  - Auto-submit priority: custom text > attachments-only (empty value) > default button/confirm — if user attached files but didn't type, auto-submit sends attachments with empty text instead of picking a random button
+  - Auto-submit now includes file attachments (if user attached files before timeout)
+  - UI tab is cleaned up immediately after auto-submit via scheduled `removeRequest()` (prevents orphaned tabs when webview is throttled)
+  - Webview now sends `formValueUpdate` messages on every input keystroke so the extension always has the latest typed value
+  - Webview-side auto-submit threshold increased from `remaining <= 1` to `remaining <= 3` seconds for additional margin (serves as backup)
+  - `getCurrentInputValue()` now returns `"Yes"` for confirm and first option for buttons instead of null
+  - Refactored: both initial and resume timeout handlers now use the shared `handleRequestTimeout()` method (eliminates code duplication and fixes the resume handler which was missing history recording and UI notification)
+
+- **Attachments lost on webview re-render** 🐛
+  - When VS Code re-creates the webview (visibility toggle, panel switch), `addRequest()` reset `attachments: []`
+  - Extension now re-sends `filesAttached` message for active request attachments after re-sending requests on `ready` and visibility change events
+
+- **Progress bar `totalTimeout` incorrect on re-render** 🐛
+  - `sendRequest()` now includes the original `totalTimeout` (from `PendingRequest`) in the message instead of using `countdown` (remaining time)
+  - Webview `addRequest()` uses `totalTimeoutSec` parameter for accurate progress bar calculation
+  - Fallback changed from hardcoded `120` to dynamic `remaining || 1` to avoid misleading progress bar
+
+- **Pause shows 0 seconds remaining in UI** 🐛
+  - **Root cause**: `pauseState` handler set `rd.isPaused = true` BEFORE computing `rd.pausedRemaining = getRemainingSeconds(rd)` — since `getRemainingSeconds` checks `isPaused` first and returns `pausedRemaining || 0`, it returned 0 (not yet set)
+  - **Fix**: Compute `pausedRemaining` directly from `serverEndTime` BEFORE setting `isPaused = true`
+
+- **Unsanctioned auto-submit fires while timer is paused** 🐛
+  - **Root cause**: Caused by the pause-shows-0 bug above — `remaining = 0` triggered `remaining <= 3` auto-submit check even though the timer was paused
+  - **Fix**: Added `!isPaused` guard to auto-submit check in `updateActiveTimer()` and defense-in-depth `isPaused` check in `handleAutoSubmit()`
+
+- **Attachments UI lost on non-active tabs after webview re-render** 🐛
+  - When webview re-renders, only the active request's attachments were re-sent — background tabs lost their attachment display
+  - `filesAttached` message now includes `requestId` field for targeted delivery
+  - `ready` and `onDidChangeVisibility` handlers now re-send attachments for ALL active requests
+  - Webview `filesAttached` handler stores attachments to the correct request (not just active)
+
+### Changed
+
+- **MCP Server**: New `onPreTimeout(callback)` method — registers a callback that is called right before a request times out, enabling extension-side auto-submit; callback returns `{value, attachments?}` or `null`
+- **MCP Server**: New private `handleRequestTimeout(requestId)` method — shared timeout logic used by both initial timeout and resume timeout handlers
+- **Message protocol**: New `formValueUpdate` webview→extension message type for live form value tracking
+- **Message protocol**: `newRequest` message now includes `totalTimeout` field (original timeout in seconds)
+- **Message protocol**: `filesAttached` message now includes `requestId` field for per-request attachment targeting
+- **Type safety**: `ExtensionToWebviewMessage` now includes `isActive`, `tabNumber`, `totalTimeout` fields; removed `any` casts from `sendRequest()` and `togglePause()`
+
+## [1.4.1] - 2026-03-07
+
+### Fixed
+
+- **Stale countdown after pause/resume + webview re-render** 🔄
+  - `sendRequest()` now uses live `getRequestEndTime()` from the MCP server instead of the original creation-time `serverEndTime`
+  - Pause state (`isPaused`) is now preserved and transmitted when re-sending requests to the webview (e.g. on visibility toggle or 'ready' event)
+  - `getRequestEndTime()` updated to return a synthetic endTime for paused requests so the UI displays the correct frozen countdown
+  - Added `isRequestPaused()` method to MCP server
+
+- **Cancelled tab disables inputs on all other tabs** 🐛
+  - `showRequestCancelled()` disables all inputs in the shared `requestContainer`, but switching to another tab would leave them disabled
+  - `displayRequest()` now resets `disabled` and `opacity` on all persistent input elements before rendering
+  - Existing cancelled banners are removed when switching tabs
+
+- **File picker race condition** 🐛
+  - `handleAttachFiles()` is async — user could switch tabs while the native file picker dialog is open
+  - Attachments would be stored on the wrong request (whichever tab was active after the dialog closed)
+  - Now captures `targetRequestId` at the start and uses it throughout, with a post-dialog validity check
+  - Only updates the attachment UI if the target request is still the active tab
+
+- **Double auto-submit on timeout** 🐛
+  - Timer interval (500ms) could fire `handleAutoSubmit()` multiple times before the extension's `clearRequest` message arrives
+  - `sendResponse()` now checks a `responded` flag on the request data to prevent duplicate submissions
+
+- **`totalTimeout` default for infinite timeout** — changed from `120` to `0` to avoid misleading progress bar calculations
+
+## [1.4.0] - 2026-03-07
+
+### Added
+
+- **Multi-agent request queue with tab UI** 🗂️
+  - Multiple agents can now send requests simultaneously — the server holds all open connections concurrently
+  - Each pending request appears as a separate tab in the header area
+  - Tabs show sequential number, truncated title, and a live countdown timer
+  - User can switch between tabs to view and respond to requests in any order
+  - New requests are added quietly as background tabs when the user is already answering (no interruption)
+  - If no request is active, a new incoming request auto-activates
+  - Tab bar auto-hides when only 0-1 requests are pending
+  - Per-tab independent pause/resume — pausing one request doesn't affect others
+  - Per-tab countdown timers with color-coded warnings (orange ≤30s, red ≤10s, ⏸ when paused)
+  - Form state (text input, custom text, toggle visibility) is saved when switching tabs and restored when returning
+  - File attachments are tracked per-request — switching tabs swaps attachment context
+  - Cancelled requests show a banner and auto-remove after 5 seconds
+  - Auto-submit on timeout works independently per tab
+
+### Changed
+
+- **Extension-side state architecture** refactored from single-request to multi-request Map-based management
+  - `currentRequest` → `activeRequests: Map<string, {request, messageHtml}>`
+  - `pendingAttachments` → `requestAttachments: Map<string, Attachment[]>`
+  - Tab numbers assigned via monotonic `tabCounter` for stable ordering
+- **Webview JavaScript** fully rewritten for multi-request support
+  - State stored in `pendingRequests` Map with per-request `serverEndTime`, `isPaused`, `tabNumber`, `attachments`
+  - Single global timer interval updates all tab countdowns simultaneously (500ms tick)
+  - `displayRequest()` handles full UI swap when switching tabs
+  - `renderTabs()` / `updateTabTimers()` for efficient tab bar management
+- **Message protocol** extended:
+  - `newRequest` now includes `isActive` and `tabNumber` fields
+  - `clearRequest` now includes `requestId` to target specific tabs
+  - `pauseState` now includes `requestId` and `serverEndTime` (on resume)
+  - New `switchTab` webview→extension message for tab switching
+- **MCP Server**: Added `getRequestEndTime(requestId)` method for UI time synchronization on pause/resume
+
 ## [1.3.0] - 2026-03-07
 
 ### Added
