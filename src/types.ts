@@ -145,6 +145,7 @@ export interface WebviewToExtensionMessage {
     | "togglePause"
     | "showInstructions"
     | "showHistory"
+    | "openSettings"
     | "attachFiles"
     | "removeAttachment"
     | "addDroppedFiles"

@@ -356,6 +356,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
         vscode.commands.executeCommand("humanInTheLoop.showHistory");
         break;
 
+      case "openSettings":
+        vscode.commands.executeCommand(
+          "workbench.action.openSettings",
+          "humanInTheLoop",
+        );
+        break;
+
       case "attachFiles":
         this.handleAttachFiles();
         break;
@@ -976,6 +983,16 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Get extension version from package.json
+   */
+  private getExtensionVersion(): string {
+    const ext = vscode.extensions.getExtension(
+      "DercasDrol.human-in-the-loop-mcp",
+    );
+    return ext?.packageJSON?.version ?? "?";
+  }
+
+  /**
    * Generate HTML for the webview
    */
   private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -1051,9 +1068,22 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             padding-right: var(--container-padding);
         }
 
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
         .server-info {
             font-size: 12px;
             color: var(--vscode-descriptionForeground);
+        }
+
+        .version-badge {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+            opacity: 0.7;
+            font-variant-numeric: tabular-nums;
         }
 
         .countdown {
@@ -1627,25 +1657,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             padding: 4px 0;
         }
 
-        /* Drag and drop visual feedback */
-        .request-container.drag-over {
-            outline: 2px dashed var(--vscode-focusBorder);
-            outline-offset: -2px;
-            background-color: var(--vscode-editor-selectionBackground);
-        }
 
-        .drop-hint {
-            display: none;
-            text-align: center;
-            padding: 12px;
-            color: var(--vscode-focusBorder);
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .request-container.drag-over .drop-hint {
-            display: block;
-        }
 
         /* === Tab bar for multiple concurrent requests === */
         .tab-bar {
@@ -1738,15 +1750,45 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             top: 4px;
             right: 4px;
         }
+
+        /* Drop overlay */
+        .drop-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 99999;
+            background: rgba(0, 120, 212, 0.15);
+            border: 3px dashed var(--vscode-focusBorder, #007acc);
+            box-sizing: border-box;
+        }
+        .drop-overlay.visible {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .drop-overlay-content {
+            color: var(--vscode-foreground);
+            font-size: 16px;
+            font-weight: 600;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
+    <div id="dropOverlay" class="drop-overlay"><div class="drop-overlay-content">📂 Drop files here</div></div>
     <div class="container">
         <div class="header">
-            <span class="server-info" id="serverInfo">Server: Not started</span>
+            <div class="header-left">
+                <span class="server-info" id="serverInfo">Server: Not started</span>
+                <span class="version-badge">v${this.getExtensionVersion()}</span>
+            </div>
             <div class="header-actions">
                 <button id="instructionsBtn" class="header-btn" title="Show Connection Instructions">📋 Instructions</button>
                 <button id="historyBtn" class="header-btn" title="Show Request History">📜 History</button>
+                <button id="settingsBtn" class="header-btn" title="Extension Settings">⚙️ Settings</button>
             </div>
         </div>
         
@@ -1814,8 +1856,9 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                 <div class="attachments-preview" id="attachmentsPreview"></div>
                 <div class="attach-error" id="attachError" style="display: none;"></div>
             </div>
-            <div class="drop-hint">📎 Drop files here to attach</div>
         </div>
+
+
 
         <div class="empty-state" id="emptyState" role="status" aria-live="polite">
             <div class="icon">💬</div>
@@ -1867,6 +1910,7 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             const mcpConfig = document.getElementById('mcpConfig');
             const instructionsBtn = document.getElementById('instructionsBtn');
             const historyBtn = document.getElementById('historyBtn');
+            const settingsBtn = document.getElementById('settingsBtn');
             const attachBtn = document.getElementById('attachBtn');
             const attachmentsPreview = document.getElementById('attachmentsPreview');
             const attachError = document.getElementById('attachError');
@@ -2506,6 +2550,13 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                     type: 'showHistory'
                 });
             });
+
+            // Settings button
+            settingsBtn.addEventListener('click', () => {
+                vscode.postMessage({
+                    type: 'openSettings'
+                });
+            });
             
             // Copy message button
             copyMessageBtn.addEventListener('click', async () => {
@@ -2778,43 +2829,56 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
             }
 
             // === Drag and Drop ===
-            let dragCounter = 0; // Track nested drag events
+            // Uses capture phase + selective stopPropagation to prevent VS Code
+            // from intercepting drag events while still allowing it to clean up.
+            const dropOverlay = document.getElementById('dropOverlay');
+            let hideTimeout = null;
+            let overlayVisible = false;
 
-            requestContainer.addEventListener('dragenter', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dragCounter++;
-                if (requestContainer.classList.contains('visible')) {
-                    requestContainer.classList.add('drag-over');
+            function showDragOverlay() {
+                if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+                if (!overlayVisible && dropOverlay) {
+                    dropOverlay.classList.add('visible');
+                    overlayVisible = true;
                 }
-            });
+            }
 
-            requestContainer.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-
-            requestContainer.addEventListener('dragleave', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dragCounter--;
-                if (dragCounter <= 0) {
-                    dragCounter = 0;
-                    requestContainer.classList.remove('drag-over');
+            function hideDragOverlay(immediate) {
+                if (hideTimeout) { clearTimeout(hideTimeout); hideTimeout = null; }
+                if (immediate) {
+                    if (dropOverlay) dropOverlay.classList.remove('visible');
+                    overlayVisible = false;
+                } else {
+                    hideTimeout = setTimeout(() => {
+                        if (dropOverlay) dropOverlay.classList.remove('visible');
+                        overlayVisible = false;
+                    }, 300);
                 }
-            });
+            }
 
-            requestContainer.addEventListener('drop', async (e) => {
+            document.addEventListener('dragenter', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                dragCounter = 0;
-                requestContainer.classList.remove('drag-over');
+                showDragOverlay();
+            }, true);
 
+            document.addEventListener('dragleave', () => {
+                hideDragOverlay(false);
+            }, true);
+
+            document.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                showDragOverlay();
+            }, true);
+
+            document.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                hideDragOverlay(true);
                 if (!activeRequestId) return;
-
                 const files = e.dataTransfer ? e.dataTransfer.files : null;
                 if (!files || files.length === 0) return;
-
                 const droppedFiles = [];
                 for (let i = 0; i < files.length; i++) {
                     try {
@@ -2824,11 +2888,10 @@ export class HumanInTheLoopViewProvider implements vscode.WebviewViewProvider {
                         console.error('Failed to read dropped file:', err);
                     }
                 }
-
                 if (droppedFiles.length > 0) {
                     vscode.postMessage({ type: 'addDroppedFiles', droppedFiles: droppedFiles });
                 }
-            });
+            }, true);
 
             // === Clipboard Paste (images) ===
             document.addEventListener('paste', async (e) => {

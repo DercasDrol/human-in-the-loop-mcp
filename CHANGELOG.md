@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2026-03-14
+
+### Added
+
+- **Version badge in header** — extension version now displayed next to server info in the panel header
+- **Settings button** ⚙️ — quick-access button in header to open extension settings (next to Instructions and History)
+
+### Changed
+
+- **Timeout limit removed** — `humanInTheLoop.timeout` setting no longer has a 600-second upper bound; set any value you need
+- **README updated** — added missing feature descriptions: multi-agent tabs, file attachments (picker/drag & drop/clipboard), request history, JSONC config support; added ⭐ rate-us prompt; corrected timeout range
+- **Drag & drop improved** — reimplemented with capture-phase event listeners, selective `stopPropagation`, and timeout-based overlay; full-page drop overlay now appears reliably when dragging files into the panel; note: if you drag a file out of the panel without dropping, the next drag may require a brief pause (VS Code sidebar limitation)
+
+## [1.4.4] - 2026-03-14
+
+### Fixed
+
+- **JSONC support for `mcp.json`**: Files with comments (`// ...`, `/* ... */`) now parse correctly instead of crashing the server. Uses `jsonc-parser` — the same parser VS Code uses internally. Editing `mcp.json` via "Configure Server" preserves existing comments.
+
 ## [1.4.3] - 2026-03-07
 
 ### Changed

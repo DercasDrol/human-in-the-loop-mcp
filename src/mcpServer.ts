@@ -6,6 +6,7 @@
 import * as http from "http";
 import * as crypto from "crypto";
 import * as vscode from "vscode";
+import * as jsonc from "jsonc-parser";
 import {
   ToolRequest,
   ToolResponse,
@@ -263,7 +264,7 @@ export class MCPServer {
         const content = Buffer.from(contentBytes).toString("utf-8");
         logger.debug(`mcp.json content: ${content}`);
 
-        const mcpConfig = JSON.parse(content);
+        const mcpConfig = jsonc.parse(content);
 
         // Look for human-in-the-loop or interactive-m server configuration
         const servers = mcpConfig.servers || mcpConfig.mcpServers || {};
@@ -367,26 +368,52 @@ export class MCPServer {
       }
 
       // Check if mcp.json already exists and read it
-      let existingConfig: any = { servers: {} };
+      let existingContent = '{\n  "servers": {}\n}';
       try {
         const contentBytes = await vscode.workspace.fs.readFile(mcpJsonUri);
-        const content = Buffer.from(contentBytes).toString("utf-8");
-        existingConfig = JSON.parse(content);
-        if (!existingConfig.servers) {
-          existingConfig.servers = {};
+        existingContent = Buffer.from(contentBytes).toString("utf-8");
+        // Validate it's parseable JSONC
+        const errors: jsonc.ParseError[] = [];
+        jsonc.parse(existingContent, errors);
+        if (errors.length > 0) {
+          // If JSONC is malformed, start fresh
+          existingContent = '{\n  "servers": {}\n}';
         }
       } catch {
-        // If reading fails (file doesn't exist or parse error), start fresh
-        existingConfig = { servers: {} };
+        // If reading fails (file doesn't exist), start fresh
+        existingContent = '{\n  "servers": {}\n}';
       }
 
-      // Add our server config
-      existingConfig.servers["human-in-the-loop"] = {
+      // Use jsonc-parser modify to preserve comments and formatting
+      const serverConfig = {
         url: `http://127.0.0.1:${port}/mcp`,
       };
 
-      // Write the config using workspace.fs
-      const configContent = JSON.stringify(existingConfig, null, 2);
+      // Ensure "servers" key exists
+      let edits = jsonc.modify(existingContent, ["servers"], undefined, {
+        formattingOptions: { tabSize: 2, insertSpaces: true },
+      });
+      // If "servers" doesn't exist, the modify with undefined won't add it
+      // So let's check and add if needed
+      const parsed = jsonc.parse(existingContent);
+      if (!parsed || !parsed.servers) {
+        edits = jsonc.modify(
+          existingContent,
+          ["servers"],
+          {},
+          { formattingOptions: { tabSize: 2, insertSpaces: true } },
+        );
+        existingContent = jsonc.applyEdits(existingContent, edits);
+      }
+
+      // Set our server entry (preserves comments in the rest of the file)
+      edits = jsonc.modify(
+        existingContent,
+        ["servers", "human-in-the-loop"],
+        serverConfig,
+        { formattingOptions: { tabSize: 2, insertSpaces: true } },
+      );
+      const configContent = jsonc.applyEdits(existingContent, edits);
       const encoder = new TextEncoder();
       await vscode.workspace.fs.writeFile(
         mcpJsonUri,
@@ -444,10 +471,7 @@ export class MCPServer {
       const pending = this.pendingRequests.get(requestId);
       if (pending) {
         try {
-          const result = this.onPreTimeoutCallback(
-            requestId,
-            pending.request,
-          );
+          const result = this.onPreTimeoutCallback(requestId, pending.request);
           if (result !== null) {
             logger.request(requestId, "Auto-submit on timeout", {
               value: result.value,

@@ -6,6 +6,8 @@
 
 A VS Code extension that implements an MCP (Model Context Protocol) server for **human-in-the-loop** interactions. It allows any MCP-compatible AI agent to request user input, confirmations, or selections directly within VS Code.
 
+> **⭐ Enjoying this extension?** If you find it useful, please [rate it on the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DercasDrol.human-in-the-loop-mcp&ssr=false#review-details) — your feedback helps other developers discover it!
+
 ## What is Human in the Loop?
 
 **Human in the Loop (HITL)** is a pattern where AI agents can pause their execution to request human input, verification, or decision-making. This is essential for:
@@ -17,17 +19,20 @@ A VS Code extension that implements an MCP (Model Context Protocol) server for *
 
 ## Features
 
-| Feature                     | Description                                                          |
-| --------------------------- | -------------------------------------------------------------------- |
-| 🔄 **MCP Server**           | Built-in HTTP server implementing the Model Context Protocol         |
-| 💬 **Interactive Panel**    | Beautiful sidebar panel for viewing and responding to agent messages |
-| ⏱️ **Countdown Timer**      | Visual countdown with configurable timeout (10-600 seconds)          |
-| 🎯 **Multiple Input Types** | Text input, Yes/No confirmation, and button selections               |
-| 🔔 **Sound Notifications**  | Configurable audio alerts when agent needs your attention            |
-| 📤 **Auto-Submit**          | Optionally auto-submit current input when timer expires              |
-| 🔒 **Privacy First**        | All data stays local, no external connections                        |
-| 🖥️ **Multi-Instance**       | Each VS Code window runs its own isolated server                     |
-| 📝 **Full Markdown**        | Rich formatting support in agent messages                            |
+| Feature                     | Description                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| 🔄 **MCP Server**           | Built-in HTTP server implementing the Model Context Protocol                      |
+| 💬 **Interactive Panel**    | Beautiful sidebar panel for viewing and responding to agent messages              |
+| ⏱️ **Countdown Timer**      | Visual countdown with configurable timeout and progress bar                       |
+| 🎯 **Multiple Input Types** | Text input, Yes/No confirmation, and button selections                            |
+| 🗂️ **Multi-Agent Tabs**     | Multiple agents can send requests simultaneously — each appears as a separate tab |
+| 📎 **File Attachments**     | Attach files and images to responses via picker, drag & drop, or clipboard paste  |
+| 🔔 **Sound Notifications**  | Configurable audio alerts when agent needs your attention                         |
+| 📤 **Auto-Submit**          | Optionally auto-submit current input when timer expires                           |
+| 📝 **Full Markdown**        | Rich formatting support in agent messages                                         |
+| 📚 **Request History**      | Searchable history of all interactions with attachment viewing                    |
+| 🔒 **Privacy First**        | All data stays local, no external connections                                     |
+| 🖥️ **Multi-Instance**       | Each VS Code window runs its own isolated server                                  |
 
 ## Installation
 
@@ -145,15 +150,15 @@ Present multiple options for the user to choose from.
 
 Configure the extension in VS Code Settings (`Ctrl+,`):
 
-| Setting                              | Type    | Default   | Description                                               |
-| ------------------------------------ | ------- | --------- | --------------------------------------------------------- |
-| `humanInTheLoop.timeout`             | number  | 120       | Response timeout in seconds (0-600). 0 = infinite timeout |
-| `humanInTheLoop.autoSubmitOnTimeout` | boolean | false     | Auto-submit current input when timer expires              |
-| `humanInTheLoop.soundEnabled`        | boolean | true      | Play sound on new requests                                |
-| `humanInTheLoop.soundVolume`         | number  | 0.5       | Sound volume (0.0 - 1.0)                                  |
-| `humanInTheLoop.soundType`           | string  | "default" | Notification sound type                                   |
-| `humanInTheLoop.enableLogging`       | boolean | false     | Enable detailed logging (Output > Human in the Loop MCP)  |
-| `humanInTheLoop.bindAddress`         | string  | "0.0.0.0" | Server bind address (see WSL/Remote section below)        |
+| Setting                              | Type    | Default   | Description                                              |
+| ------------------------------------ | ------- | --------- | -------------------------------------------------------- |
+| `humanInTheLoop.timeout`             | number  | 120       | Response timeout in seconds. 0 = infinite timeout        |
+| `humanInTheLoop.autoSubmitOnTimeout` | boolean | false     | Auto-submit current input when timer expires             |
+| `humanInTheLoop.soundEnabled`        | boolean | true      | Play sound on new requests                               |
+| `humanInTheLoop.soundVolume`         | number  | 0.5       | Sound volume (0.0 - 1.0)                                 |
+| `humanInTheLoop.soundType`           | string  | "default" | Notification sound type                                  |
+| `humanInTheLoop.enableLogging`       | boolean | false     | Enable detailed logging (Output > Human in the Loop MCP) |
+| `humanInTheLoop.bindAddress`         | string  | "0.0.0.0" | Server bind address (see WSL/Remote section below)       |
 
 ### Sound Types
 

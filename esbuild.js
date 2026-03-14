@@ -35,6 +35,7 @@ async function main() {
     sourcemap: !production,
     sourcesContent: false,
     platform: "node",
+    mainFields: ["module", "main"],
     outfile: "out/extension.js",
     external: ["vscode"],
     logLevel: "silent",

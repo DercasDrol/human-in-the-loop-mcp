@@ -115,7 +115,7 @@ export class HistoryViewProvider {
       const doc = await vscode.workspace.openTextDocument(fileUri);
       await vscode.window.showTextDocument(doc, { preview: true });
     } catch (error) {
-      console.error('Failed to open file:', relativePath, error);
+      console.error("Failed to open file:", relativePath, error);
       vscode.window.showErrorMessage(`Cannot open file: ${relativePath}`);
     }
   }
@@ -144,7 +144,7 @@ export class HistoryViewProvider {
         vscode.window.showInformationMessage(`File saved: ${targetUri.fsPath}`);
       }
     } catch (error) {
-      console.error('Failed to save file:', relativePath, error);
+      console.error("Failed to save file:", relativePath, error);
       vscode.window.showErrorMessage(`Cannot save file: ${relativePath}`);
     }
   }
