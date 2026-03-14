@@ -60,25 +60,25 @@ function normalizeEscapes(text: string): string {
 }
 
 /**
- * Combine prompt and message fields from tool arguments.
- * Agents may send content in either or both fields.
- * `prompt` is accepted as a backward-compatible alias for `message`.
- * When both exist, they are concatenated.
+ * Combine message fields from tool arguments.
+ * Agents may send the message body under different field names.
+ * Accepted aliases: `message` (primary), `question`, `prompt`, `text`.
+ * When multiple exist, they are concatenated (priority order above).
  * @param safeArgs - Tool arguments object
  * @returns Combined message string
  */
 function combinePromptAndMessage(safeArgs: Record<string, unknown>): string {
-  const prompt =
-    typeof safeArgs.prompt === "string" ? safeArgs.prompt.trim() : "";
   const message =
     typeof safeArgs.message === "string" ? safeArgs.message.trim() : "";
+  const question =
+    typeof safeArgs.question === "string" ? safeArgs.question.trim() : "";
+  const prompt =
+    typeof safeArgs.prompt === "string" ? safeArgs.prompt.trim() : "";
+  const text = typeof safeArgs.text === "string" ? safeArgs.text.trim() : "";
 
-  let combined: string;
-  if (prompt && message) {
-    combined = message + "\n\n" + prompt;
-  } else {
-    combined = message || prompt || "";
-  }
+  // Priority: message > question > prompt > text
+  const parts = [message, question, prompt, text].filter(Boolean);
+  const combined = parts.length > 0 ? parts.join("\n\n") : "";
 
   return normalizeEscapes(combined);
 }
@@ -1227,7 +1227,12 @@ BEHAVIOR:
 - The message supports full Markdown formatting (GFM)
 - If the agent disconnects (HTTP connection closes), the request is automatically cancelled and the user is notified
 
-RESPONSE FORMAT:
+PARAMETERS (use exact names from inputSchema):
+- title (required): Short header text for the panel
+- message: The full text/question displayed to the user (supports Markdown)
+- placeholder: Hint text shown in the empty input field
+
+TOOL OUTPUT (what this tool returns to the agent after the user responds):
 - Text response: [{type: "text", text: "user's answer"}]
 - With image attachment: + [{type: "image", data: "base64...", mimeType: "image/png"}]
 - With text file attachment: + [{type: "text", text: "--- filename.txt ---\nfile content"}]
@@ -1283,7 +1288,11 @@ BEHAVIOR:
 - The message supports full Markdown formatting (GFM)
 - If the agent disconnects, the request is automatically cancelled
 
-RESPONSE FORMAT:
+PARAMETERS (use exact names from inputSchema):
+- title (required): Short header text for the dialog
+- message: The full text/question explaining what is being confirmed (supports Markdown)
+
+TOOL OUTPUT (what this tool returns to the agent after the user responds):
 - Confirmation: [{type: "text", text: "Yes"}] or [{type: "text", text: "No"}]
 - Custom text: [{type: "text", text: "user's custom response"}]
 - With attachments: additional [{type: "image", ...}] or [{type: "text", text: "--- file ---\n..."}] entries
@@ -1334,7 +1343,12 @@ BEHAVIOR:
 - The message supports full Markdown formatting (GFM)
 - If the agent disconnects, the request is automatically cancelled
 
-RESPONSE FORMAT:
+PARAMETERS (use exact names from inputSchema):
+- title (required): Short header text for the selection
+- message: The full text/question displayed above the buttons (supports Markdown)
+- options (required): Array of {label, value} objects defining the buttons
+
+TOOL OUTPUT (what this tool returns to the agent after the user responds):
 - Button click: [{type: "text", text: "selected_value"}]
 - Custom text: [{type: "text", text: "user's custom response"}]
 - With attachments: additional [{type: "image", ...}] or [{type: "text", text: "--- file ---\n..."}] entries
@@ -1432,7 +1446,7 @@ BEST PRACTICES:
             "",
           ),
           placeholder: validateString(
-            safeArgs.placeholder,
+            safeArgs.placeholder || safeArgs.hint,
             MAX_PLACEHOLDER_LENGTH,
             undefined,
           ),
@@ -1474,7 +1488,9 @@ BEST PRACTICES:
             MAX_MESSAGE_LENGTH,
             "",
           ),
-          options: validateOptions(safeArgs.options),
+          options: validateOptions(
+            safeArgs.options || safeArgs.buttons || safeArgs.choices,
+          ),
           timestamp: now,
           serverEndTime,
         } as ButtonsToolRequest;
